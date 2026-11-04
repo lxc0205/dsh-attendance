@@ -1,0 +1,26 @@
+# Dependencies and generated archives
+node_modules/
+*.tgz
+coverage/
+
+# Local configuration, credentials and user data
+.env
+.env.*
+!.env.example
+*.local
+*.log
+*.pem
+*.key
+credentials*.json
+attendance-export*.json
+
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Temporary tooling
+.tools/
+.tmp/

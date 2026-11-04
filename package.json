@@ -1,0 +1,36 @@
+{
+  "name": "dsh-attendance",
+  "version": "0.4.2",
+  "private": true,
+  "description": "Attendance day tabs and period cards with six fixed time presets, click-to-add manual entries, automatic totals and history.",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/lxc0205/dsh-attendance.git" },
+  "homepage": "https://github.com/lxc0205/dsh-attendance#readme",
+  "bugs": { "url": "https://github.com/lxc0205/dsh-attendance/issues" },
+  "engines": { "node": ">=22" },
+  "keywords": ["dsh", "deepseek-harness", "attendance", "time-tracking"],
+  "scripts": {
+    "check": "node --check client.js && node --check index.js && node --check verify-attendance.cjs",
+    "test": "node verify-attendance.cjs"
+  },
+  "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": ["index.js", "client.js", "cordis.patch.yml", "locale/*.json", "icon.svg", "README.md", "LICENSE", "CHANGELOG.md"],
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar"
+      ]
+    }
+  }
+}
