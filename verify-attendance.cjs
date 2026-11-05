@@ -283,6 +283,37 @@ if (!process.argv.includes('--calendar-only')) {
     writePresets(storage, adjacent);
     same(readPresets(storage), adjacent);
   });
+  test('complete presets can directly record the selected day without a confirmation step', () => {
+    const storage = new FakeStorage(), date = '2025-01-02';
+    putDay(storage, '2025-01-01', fullDay());
+    const previous = storage.getItem(dayKey('2025-01-01'));
+    writePresets(storage, fullDay(), date, true);
+    same(loadRecord(storage, date), { periods: fullDay(), presets: fullDay() });
+    assert.equal(daySummary(loadDay(storage, date)).total, 615);
+    assert.equal(storage.getItem(dayKey('2025-01-01')), previous);
+    assert.equal(storage.getItem(dayKey('2025-01-03')), null);
+  });
+  test('partial presets wait for a manual entry, which creates and counts the day directly', () => {
+    const storage = new FakeStorage(), date = '2025-01-02';
+    const presets = { ...empty(), morning: { start: '09:00', end: '' } };
+    writePresets(storage, presets, date, true);
+    assert.equal(loadRecord(storage, date), null);
+    updateDay(storage, date, 'morning', 'end', '12:00', presets);
+    assert.equal(daySummary(loadDay(storage, date)).total, 180);
+    assert.equal(loadRecord(storage, date).presets.morning.start, '09:00');
+  });
+  test('failed automatic recording restores presets and does not leave a partial day', () => {
+    const storage = new FakeStorage(), date = '2025-01-02';
+    writePresets(storage, empty());
+    const previous = storage.getItem(PRESET_KEY), set = storage.setItem;
+    storage.setItem = function (key, value) {
+      if (key === dayKey(date)) throw new Error('Day storage denied');
+      return set.call(this, key, value);
+    };
+    assert.throws(() => writePresets(storage, fullDay(), date, true), /Day storage denied/);
+    assert.equal(storage.getItem(PRESET_KEY), previous);
+    assert.equal(storage.getItem(dayKey(date)), null);
+  });
   test('saving presets without a date only changes global defaults', () => {
     const storage = new FakeStorage();
     writePresets(storage, fullDay());

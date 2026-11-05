@@ -83,7 +83,7 @@ window.__ModuleLoader__.load({
       if (!data || data.version !== 1) throw new Error('Invalid preset version');
       return validatePresets(data.periods);
     }
-    function writePresets(storage, presets, date) {
+    function writePresets(storage, presets, date, recordCompleteDay = false) {
       const periods = validatePresets(presets);
       if (date !== undefined && !isDate(date)) throw new Error('Invalid date');
       const existing = date === undefined ? null : loadRecord(storage, date);
@@ -95,6 +95,9 @@ window.__ModuleLoader__.load({
             if (periods[id][field] !== '') next.periods[id][field] = periods[id][field];
           }
         }
+      }
+      if (!next && recordCompleteDay && date !== undefined && PERIOD_IDS.every(id => periods[id].start !== '' && periods[id].end !== '')) {
+        next = { periods: validateDay(periods), presets: validateDay(periods) };
       }
       const previousPresets = next ? storage.getItem(PRESET_KEY) : null;
       storage.setItem(PRESET_KEY, JSON.stringify({ version: 1, periods }));
@@ -202,9 +205,8 @@ window.__ModuleLoader__.load({
         presetsChanged: '预设或当天记录已在其他页面更新，已刷新显示，请核对后重新操作。',
         fixed: '预设固定', manual: '手动填写', addTime: '点击添加', editTime: '点击修改',
         clearTime: '清空时间',
-        saveTime: '保存时间', cancel: '取消', createDay: '记录当天考勤', preview: '预设预览 · 尚未记录',
-        previewHint: '固定时间已带入。点击记录当天考勤，或保存一个手动时间点后，才会计入合计。',
-        dayRecorded: '当天考勤已记录。', dayFocus: '当天概览', recorded: '已记录', notStarted: '尚未记录',
+        saveTime: '保存时间', cancel: '取消',
+        dayFocus: '当天概览', recorded: '已记录', notStarted: '尚未填写',
         progressTitle: '每一小时，都在向目标靠近', dayNavigation: '选择日期', settingsClose: '收起预设',
         invalidEntry: '请输入有效的小时和分钟。', segments: '三个时段，一天的节奏',
         morning: '早上', afternoon: '下午', evening: '晚上', start: '上班', end: '下班',
@@ -237,9 +239,8 @@ window.__ModuleLoader__.load({
         presetsChanged: 'Presets or this day changed in another page. The view has refreshed; review it and try again.',
         fixed: 'Fixed preset', manual: 'Manual entry', addTime: 'Click to add', editTime: 'Click to edit',
         clearTime: 'Clear time',
-        saveTime: 'Save time', cancel: 'Cancel', createDay: 'Record this day', preview: 'Preset preview · Not recorded',
-        previewHint: 'Presets are ready. Record the day or save a manual time to include it in totals.',
-        dayRecorded: 'Day recorded.', dayFocus: 'Daily overview', recorded: 'Recorded', notStarted: 'Not recorded',
+        saveTime: 'Save time', cancel: 'Cancel',
+        dayFocus: 'Daily overview', recorded: 'Recorded', notStarted: 'Not filled in',
         progressTitle: 'Every hour brings you closer', dayNavigation: 'Choose a day', settingsClose: 'Close presets',
         invalidEntry: 'Enter a valid hour and minute.', segments: 'Three periods. One day.',
         morning: 'Morning', afternoon: 'Afternoon', evening: 'Evening', start: 'Clock in', end: 'Clock out',
@@ -298,7 +299,7 @@ window.__ModuleLoader__.load({
       .at-segment-total{margin-top:12px;padding-top:10px;border-top:1px solid var(--at-border);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px;font-size:12px;font-variant-numeric:tabular-nums}.at-segment-total strong{font-size:14px;color:color-mix(in srgb,var(--at-period) 72%,var(--at-ink))}
       .at-editor{margin-top:10px;border:1px solid var(--at-blue);border-radius:10px;padding:10px;background:color-mix(in srgb,var(--at-blue) 4%,var(--at-surface))}.at-editor input{width:100%;margin:7px 0 10px}.at-editor .at-tools{gap:6px}.at-editor button{padding:7px 10px}
       .at-preset-panel{border:1px solid var(--at-border);border-radius:14px;padding:18px;background:var(--at-surface);box-shadow:var(--at-shadow)}.at-preset-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin:14px 0}.at-preset-group{border:1px solid var(--at-border);border-top:3px solid var(--at-period,var(--at-blue));border-radius:10px;padding:12px;min-width:0}.at-preset-group legend{font-size:13px;font-weight:650;padding:0 6px}.at-preset-group label{display:flex;flex-direction:column;gap:5px;font-size:12px;margin-bottom:10px;color:var(--at-muted)}.at-preset-group label:last-child{margin-bottom:0}.at-preset-group input{width:100%;min-width:0}
-      .at-preview{border:1px dashed var(--at-border);border-left:4px solid var(--at-blue);border-radius:10px;padding:10px 13px;background:var(--at-surface)}.at-badge{border-radius:20px;padding:4px 9px;background:color-mix(in srgb,var(--at-ink) 8%,var(--at-surface));font-size:11px;font-weight:600;color:var(--at-muted)}.at-badge-recorded{background:var(--at-green);color:var(--at-white)}
+      .at-badge{border-radius:20px;padding:4px 9px;background:color-mix(in srgb,var(--at-ink) 8%,var(--at-surface));font-size:11px;font-weight:600;color:var(--at-muted)}.at-badge-recorded{background:var(--at-green);color:var(--at-white)}
       .at-page .at-error{font-size:12px;font-weight:500;color:var(--dsw-alias-state-error-primary,#dc2626)}.at-message:empty{display:none}.at-page input[aria-invalid=true]{border-color:var(--dsw-alias-state-error-primary,#dc2626)}
       @container attendance (max-width:780px){.at-segments,.at-preset-grid{grid-template-columns:1fr}.at-summary-grid{grid-template-columns:1fr}.at-tabs{grid-template-columns:repeat(7,96px)}.at-number{font-size:30px;line-height:38px}.at-page .at-point{min-height:92px}}
       @media(max-width:700px){.at-segments,.at-preset-grid,.at-summary-grid{grid-template-columns:1fr}.at-tabs{grid-template-columns:repeat(7,96px)}.at-number{font-size:30px;line-height:38px}.at-page .at-point{min-height:92px}.at-hero,.at-day-summary{padding:14px 16px}}
@@ -418,17 +419,15 @@ window.__ModuleLoader__.load({
                   const date = todayInShanghai();
                   await window.navigator.locks.request(`dsh-attendance.date.${date}`, () => {
                     if (todayInShanghai() !== date) throw new Error('Day changed');
-                    writePresets(window.localStorage, action.value, date);
+                    writePresets(window.localStorage, action.value, date, true);
                   });
                 });
                 setToday(todayInShanghai());
                 setPresetDraft(null); setPresetDirty(false); setPresetsOpen(false); setNotice('presetsSaved');
               } else {
-                await window.navigator.locks.request(`dsh-attendance.date.${action.date}`, () => action.kind === 'create'
-                  ? createDay(window.localStorage, action.date, action.expectedPresets)
-                  : updateDay(window.localStorage, action.date, action.period, action.field, action.value, action.expectedPresets));
-                if (action.kind === 'field') { restorePoint.current = `${action.period}-${action.field}`; setEditor(null); }
-                setNotice(action.kind === 'create' ? 'dayRecorded' : 'saved');
+                await window.navigator.locks.request(`dsh-attendance.date.${action.date}`, () => updateDay(window.localStorage, action.date, action.period, action.field, action.value, action.expectedPresets));
+                restorePoint.current = `${action.period}-${action.field}`; setEditor(null);
+                setNotice('saved');
               }
               setPending(null); refresh();
             } catch (error) {
@@ -462,7 +461,7 @@ window.__ModuleLoader__.load({
             setPresetDirty(true); if (pending?.kind === 'presets') setPending(null); setNotice(null);
           }
           const draft = presetDraft ?? snapshot.presets;
-          const errorNotice = notice && !['saved', 'targetSaved', 'saving', 'presetsSaved', 'dayRecorded'].includes(notice);
+          const errorNotice = notice && !['saved', 'targetSaved', 'saving', 'presetsSaved'].includes(notice);
           return h('section', { className: 'at-page', 'aria-label': t('title') }, h('style', null, css),
             h('div', { className: 'at-inner' },
               h('header', { className: 'at-row' }, h('div', null, h('h1', null, t('title')), h('p', null, t('subtitle'))),
@@ -501,8 +500,6 @@ window.__ModuleLoader__.load({
                 })),
                 h('section', { className: 'at-panel', role: 'tabpanel', id: 'at-day-panel', 'aria-labelledby': `at-tab-${active}` },
                   h('div', { className: 'at-row' }, h('h2', null, t('segments')), h('span', { className: 'at-sub' }, active)),
-                  !record && !blocked ? h('div', { className: 'at-preview at-row' }, h('div', null, h('span', { className: 'at-badge' }, t('preview')), h('p', null, t('previewHint'))),
-                    h('button', { type: 'button', className: 'at-primary', disabled: saving || Boolean(pending) || Boolean(editor) || snapshot.presetsError, onClick: () => perform({ kind: 'create', date: active, expectedPresets: snapshot.presets }) }, '+ ', t('createDay'))) : null,
                   h('div', { className: 'at-segments' }, ...PERIOD_IDS.map((period, index) => {
                     const status = summary.statuses[period], errorId = `at-error-${active}-${period}`;
                     return h('article', { className: 'at-segment', key: period, 'data-at-period': period, 'aria-label': t(period) },
