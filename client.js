@@ -349,10 +349,10 @@ window.__ModuleLoader__.load({
       .at-page button{cursor:pointer;font-weight:500}.at-page button:hover:not(:disabled){background:color-mix(in srgb,var(--at-blue) 9%,var(--at-surface));border-color:var(--at-blue)}
       .at-page button:disabled,.at-page input:disabled{opacity:.48;cursor:not-allowed}.at-page button:focus-visible,.at-page input:focus-visible,.at-page select:focus-visible{outline:3px solid var(--at-blue);outline-offset:3px}
       .at-page .at-primary{background:var(--at-blue);color:var(--at-white);border-color:var(--at-blue);font-weight:600}.at-page .at-primary:hover:not(:disabled){background:#1d4ed8;border-color:#1d4ed8}
-      .at-hero,.at-day-summary{border:1px solid var(--at-border);border-top:4px solid var(--at-blue);border-radius:14px;padding:16px 20px;background:var(--at-surface);box-shadow:var(--at-shadow);min-width:0}
-      .at-kicker{font-size:13px;color:var(--at-ink);font-weight:650}.at-number{font-size:34px;line-height:43px;font-weight:700;letter-spacing:-.8px;font-variant-numeric:tabular-nums;margin:6px 0 2px;overflow-wrap:anywhere}.at-number small{font-size:13px;font-weight:600;letter-spacing:0;color:var(--at-muted);margin-left:12px}
-      .at-track{height:10px;border-radius:8px;overflow:hidden;background:color-mix(in srgb,var(--at-ink) 12%,var(--at-surface));margin:10px 0}.at-fill{height:100%;background:linear-gradient(90deg,var(--at-blue),var(--at-green));border-radius:inherit;transition:width .25s ease}
-      .at-summary-grid{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(220px,1fr);gap:14px}.at-day-summary{border-top-color:var(--at-green);display:flex;flex-direction:column;justify-content:space-between;gap:8px}
+      .at-hero,.at-day-summary{border:1px solid var(--at-border);border-top:4px solid var(--at-blue);border-radius:14px;padding:13px 18px;background:var(--at-surface);box-shadow:var(--at-shadow);min-width:0}
+      .at-kicker{font-size:13px;color:var(--at-ink);font-weight:650}.at-number{font-size:32px;line-height:40px;font-weight:700;letter-spacing:-.8px;font-variant-numeric:tabular-nums;margin:4px 0 2px;overflow-wrap:anywhere}.at-number small{font-size:13px;font-weight:600;letter-spacing:0;color:var(--at-muted);margin-left:12px}
+      .at-track{height:10px;border-radius:8px;overflow:hidden;background:color-mix(in srgb,var(--at-ink) 12%,var(--at-surface));margin:8px 0}.at-fill{height:100%;background:linear-gradient(90deg,var(--at-blue),var(--at-green));border-radius:inherit;transition:width .25s ease}
+      .at-summary-grid{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(220px,1fr);gap:14px}.at-day-summary{border-top-color:var(--at-green);display:flex;flex-direction:column;justify-content:space-between;gap:6px}
       .at-label{display:flex;align-items:center;flex-wrap:wrap;gap:7px;font-size:12px;color:var(--at-muted)}.at-target{width:82px}.at-page .at-sub,.at-page .at-foot{font-size:12px;color:var(--at-muted)}
       .at-week-head{margin:0 0 10px}.at-tabs{display:grid;grid-template-columns:repeat(7,minmax(90px,1fr));gap:8px;overflow-x:auto;padding:4px 3px 8px}
       .at-page .at-tab{text-align:left;border-radius:11px;padding:10px 11px;display:flex;flex-direction:column;gap:5px;min-width:90px;border:1px solid var(--at-border);background:var(--at-surface);box-shadow:var(--at-shadow)}
@@ -495,7 +495,7 @@ window.__ModuleLoader__.load({
           const displayed = blocked ? blankDay() : record?.periods ?? snapshot.presets;
           const fixed = blocked ? blankDay() : record?.presets ?? snapshot.presets;
           const summary = daySummary(displayed);
-          const total = sumWeek(snapshot.viewed), currentTotal = sumWeek(snapshot.current);
+          const currentTotal = sumWeek(snapshot.current);
           const percent = snapshot.target === null ? null : currentTotal / (snapshot.target * 60) * 100;
           const navigationLocked = saving || Boolean(pending) || Boolean(editor);
           const range = monday => `${monday} — ${addDays(monday, 6)}`;
@@ -650,11 +650,9 @@ window.__ModuleLoader__.load({
                   percent !== null ? h('div', { className: 'at-track', role: 'progressbar', 'aria-label': t('currentProgress'), 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': Math.min(100, percent), 'aria-valuetext': `${formatDuration(currentTotal)} / ${snapshot.target} ${t('hours')}` }, h('div', { className: 'at-fill', style: { width: `${Math.min(100, percent)}%` } })) : null,
                   h('form', { className: 'at-tools', onSubmit: saveTarget }, h('label', { className: 'at-label' }, t('target'), h('input', { className: 'at-target', type: 'number', min: 0.01, max: 168, step: 'any', required: true, value: targetDirty ? targetInput : (snapshot.target ?? ''), disabled: saving, onChange: event => { setTargetInput(event.target.value); setTargetDirty(true); } })), h('button', { type: 'submit', disabled: !targetDirty || saving }, t('saveTarget'))),
                   snapshot.targetError ? h('p', { className: 'at-error', role: 'alert' }, t('targetLoadError')) : null,
-                  snapshot.current.errors.length ? h('p', { className: 'at-error', role: 'alert' }, t('currentError')) : null,
-                  Object.values(snapshot.current.days).some(day => daySummary(day).incomplete) ? h('p', { className: 'at-error' }, t('partial')) : null),
+                  snapshot.current.errors.length ? h('p', { className: 'at-error', role: 'alert' }, t('currentError')) : null),
                 h('section', { className: 'at-day-summary', 'aria-label': t('dayFocus') }, h('div', { className: 'at-row' }, h('span', { className: 'at-kicker' }, t('dayFocus')), h('span', { className: record ? 'at-badge at-badge-recorded' : 'at-badge' }, record ? t('recorded') : t('notStarted'))),
-                  h('div', null, h('p', null, active), h('div', { className: 'at-number' }, blocked || !record ? '—' : formatDuration(summary.total)), h('p', null, t('dailyTotal'))),
-                  h('p', { className: 'at-foot' }, `${t('weekTotal')} · ${formatDuration(total)}`))),
+                  h('div', null, h('p', null, active), h('div', { className: 'at-number' }, blocked || !record ? '—' : formatDuration(summary.total)), h('p', null, t('dailyTotal'))))),
               h('section', null,
                 h('div', { className: 'at-row at-week-head' }, h('h2', null, range(selected)), h('div', { className: 'at-tools' },
                   h('button', { type: 'button', disabled: navigationLocked, onClick: () => navigate(addDays(active, -7)) }, '← ', t('previous')),

@@ -1,6 +1,6 @@
 {
   "name": "dsh-attendance",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "private": true,
   "description": "Attendance day tabs and period cards with six fixed time presets, click-to-add manual entries, automatic totals and history.",
   "license": "MIT",
