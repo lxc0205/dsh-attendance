@@ -201,7 +201,9 @@ export class AttendanceFileStore {
         identity = await handle.stat();
         await handle.writeFile(token, 'utf8');
         await this._recover();
-        return await action();
+        const result = await action();
+        await this._removeEmptyLegacyDirectory();
+        return result;
       } finally {
         await handle.close();
         const stat = await fs.lstat(lockPath).catch(error => { if (error.code === 'ENOENT') return null; throw error; });
@@ -321,6 +323,16 @@ export class AttendanceFileStore {
     }
   }
 
+  async _removeEmptyLegacyDirectory() {
+    const directory = path.join(this.directoryPath, 'weekly-targets');
+    if (!await statPath(directory, 'directory')) return;
+    try { await fs.rmdir(directory); }
+    catch (error) {
+      if (!['ENOENT', 'ENOTEMPTY', 'EEXIST', 'EACCES', 'EPERM', 'EBUSY'].includes(error.code)) throw error;
+      // Only remove an empty directory. Open handles or unknown files can wait.
+    }
+  }
+
   async _scan() {
     const entries = new Map();
     const files = new Map();
@@ -331,8 +343,10 @@ export class AttendanceFileStore {
       for (const [key, value] of decodeSettings(settings)) entries.set(key, value);
     }
     for (const [directory, prefix] of [['records', DAY_PREFIX], ['weekly-targets', TARGET_PREFIX]]) {
-      await ensureDirectory(path.join(this.directoryPath, directory));
-      for (const name of (await fs.readdir(path.join(this.directoryPath, directory))).sort()) {
+      const location = path.join(this.directoryPath, directory);
+      if (directory === 'records') await ensureDirectory(location);
+      else if (!await statPath(location, 'directory')) continue;
+      for (const name of (await fs.readdir(location)).sort()) {
         if (!name.endsWith('.json') || !validDate(name.slice(0, -5))) continue;
         const relative = `${directory}/${name}`;
         const raw = await readBytes(await this._safePath(relative));

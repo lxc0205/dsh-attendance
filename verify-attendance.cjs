@@ -885,6 +885,7 @@ if (!process.argv.includes('--calendar-only')) {
       { key: TARGET_PREFIX + '2024-12-30', value: null },
     ]);
     same(plan.expected, [
+      { key: TARGET_KEY, value: null },
       { key: TARGET_PREFIX + '2025-01-06', value: '37.5' },
       { key: TARGET_PREFIX + '2024-12-30', value: '32' },
     ]);
@@ -897,6 +898,29 @@ if (!process.argv.includes('--calendar-only')) {
     }, entries))), 37.5);
     assert.equal(planTargetMigration([{ key: TARGET_KEY, value: '37.5' }]), null, 'a consolidated folder needs no migration');
     assert.equal(planTargetMigration([{ key: TARGET_PREFIX + '2024-12-30', value: '{broken' }]), null);
+  });
+  test('target migration guards a literal null shared value and preserves exact legacy raw values', () => {
+    const entries = [{ key: TARGET_KEY, value: 'null' }, { key: targetKey('2025-01-06'), value: ' 37.5 ' }];
+    const before = JSON.stringify(entries);
+    const plan = planTargetMigration(entries);
+    same(plan.expected, [{ key: TARGET_KEY, value: 'null' }, { key: targetKey('2025-01-06'), value: ' 37.5 ' }]);
+    same(plan.changes, [{ key: TARGET_KEY, value: '37.5' }, { key: targetKey('2025-01-06'), value: null }]);
+    assert.equal(JSON.stringify(entries), before);
+  });
+  test('existing shared target wins while migration removes only valid legacy targets', () => {
+    const entries = [
+      { key: TARGET_KEY, value: '36' },
+      { key: targetKey('2025-01-06'), value: '37.5' },
+      { key: targetKey('2024-12-30'), value: '{broken' },
+      { key: targetKey('2025-01-13'), value: '169' },
+      { key: TARGET_PREFIX + '2025-02-30', value: '40' },
+    ];
+    const plan = planTargetMigration(entries);
+    same(plan.changes, [{ key: targetKey('2025-01-06'), value: null }]);
+    same(plan.expected, [{ key: TARGET_KEY, value: '36' }, { key: targetKey('2025-01-06'), value: '37.5' }]);
+    assert.equal(readTarget(createFileStorage(entries)), 36);
+    assert.equal(planTargetMigration(entries.filter(entry => entry.key !== targetKey('2025-01-06'))), null);
+    assert.equal(planTargetMigration([{ key: TARGET_KEY, value: '{broken' }, { key: targetKey('2025-01-06'), value: '40' }]), null);
   });
   test('history lists empty, nonempty and damaged records while ignoring invalid dates', () => {
     const storage = new FakeStorage();

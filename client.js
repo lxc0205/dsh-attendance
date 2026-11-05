@@ -207,14 +207,15 @@ window.__ModuleLoader__.load({
       storage.setItem(TARGET_KEY, JSON.stringify(hours));
     }
     function planTargetMigration(entries) {
-      const storage = createFileStorage(entries);
-      try { if (targetValue(storage.getItem(TARGET_KEY)) !== null) return null; }
+      const storage = createFileStorage(entries), raw = storage.getItem(TARGET_KEY);
+      let shared;
+      try { shared = targetValue(raw); }
       catch { return null; }
       const legacy = legacyTargets(storage);
       if (!legacy.length) return null;
       return {
-        changes: [{ key: TARGET_KEY, value: JSON.stringify(legacy[0].hours) }, ...legacy.map(({ key }) => ({ key, value: null }))],
-        expected: legacy.map(({ key }) => ({ key, value: storage.getItem(key) }))
+        changes: [...(shared === null ? [{ key: TARGET_KEY, value: JSON.stringify(legacy[0].hours) }] : []), ...legacy.map(({ key }) => ({ key, value: null }))],
+        expected: [{ key: TARGET_KEY, value: raw }, ...legacy.map(({ key }) => ({ key, value: storage.getItem(key) }))]
       };
     }
     function createFileStorage(entries = [], writable = false) {

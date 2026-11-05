@@ -43,9 +43,46 @@ const { pathToFileURL } = require('node:url');
       assert.deepEqual(JSON.parse(await read(settingsPath)), { format: 'dsh-attendance-settings', version: 1, presets: null, legacyPresets: null, weeklyTarget: null, unparsedEntries: {} });
       assert.match(await read(settingsPath), /\n  "format"/);
       assert.ok((await fs.stat(path.join(root, 'records'))).isDirectory());
-      assert.ok((await fs.stat(path.join(root, 'weekly-targets'))).isDirectory());
+      await missing(path.join(root, 'weekly-targets'));
       await missing(filePath);
       await missing(settingsPath + '.bak');
+    });
+    await test('initialization, repeated reads and shared target saves never create the legacy directory', async () => {
+      const isolated = await fresh('no-legacy-directory');
+      const legacyDirectory = path.join(isolated.directory, 'weekly-targets');
+      for (let index = 0; index < 3; index++) { await isolated.store.read(); await missing(legacyDirectory); }
+      await isolated.store.commit({ changes: [{ key: TARGET_KEY, value: '37.5' }], expected: [{ key: TARGET_KEY, value: null }] });
+      await missing(legacyDirectory);
+      assert.equal(values(await isolated.store.read())[TARGET_KEY], '37.5');
+      await missing(legacyDirectory);
+    });
+    await test('reading an empty legacy directory removes it without changing records or settings bytes', async () => {
+      const isolated = await fresh('empty-legacy-directory');
+      await isolated.store.commit({ changes: [{ key: day, value: '{ "keep": true }' }, { key: TARGET_KEY, value: '36' }], expected: [] });
+      const paths = [path.join(isolated.directory, 'records', '2026-11-05.json'), path.join(isolated.directory, 'settings.json')];
+      const before = await Promise.all(paths.map(read));
+      const legacyDirectory = path.join(isolated.directory, 'weekly-targets');
+      await fs.mkdir(legacyDirectory);
+      await isolated.store.read();
+      await missing(legacyDirectory);
+      assert.deepEqual(await Promise.all(paths.map(read)), before);
+      await isolated.store.read();
+      await missing(legacyDirectory);
+    });
+    await test('unknown files, nested directories and damaged legacy targets survive reads and shared saves', async () => {
+      const isolated = await fresh('nonempty-legacy-directory');
+      await isolated.store.read();
+      const legacyDirectory = path.join(isolated.directory, 'weekly-targets');
+      await fs.mkdir(legacyDirectory);
+      await fs.mkdir(path.join(legacyDirectory, 'unknown-directory'));
+      const fixtures = [['notes.txt', 'keep unknown bytes'], ['2026-02-30.json', '40'], ['2026-11-02.json', '{damaged legacy target']];
+      for (const [name, bytes] of fixtures) await fs.writeFile(path.join(legacyDirectory, name), bytes);
+      const snapshot = await isolated.store.read();
+      assert.equal(values(snapshot)[target], '{damaged legacy target');
+      await isolated.store.commit({ changes: [{ key: TARGET_KEY, value: '39' }], expected: [] });
+      await isolated.store.read();
+      for (const [name, bytes] of fixtures) assert.equal(await read(path.join(legacyDirectory, name)), bytes);
+      assert.ok((await fs.stat(path.join(legacyDirectory, 'unknown-directory'))).isDirectory());
     });
     await test('preset + native day + numeric weekly target commit together', async () => {
       const native = { version: 3, date: '2026-11-05', periods: { morning: { start: '08:30', end: '12:00' } } };
