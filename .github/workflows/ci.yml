@@ -24,7 +24,7 @@ jobs:
           node-version: ${{ matrix.node }}
       - name: Check JavaScript syntax
         run: npm run check
-      - name: Verify attendance model and package resources
+      - name: Verify attendance and file persistence
         run: npm test
       - name: Verify package contents
         run: npm pack --dry-run --ignore-scripts

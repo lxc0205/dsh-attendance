@@ -18,13 +18,13 @@ const context = vm.createContext({});
 vm.runInContext(`${helpers}\nthis.api = {
   PERIOD_IDS, DAY_PREFIX, TARGET_PREFIX, PRESET_KEY, blankDay, periodStatus, daySummary,
   weekStart, addDays, weekDates, isDate, readPresets, writePresets, loadRecord, createDay, loadDay, updateDay, loadWeek,
-  listWeeks, readTarget, writeTarget
+  listWeeks, readTarget, writeTarget, createRecordLog, parseRecordLog, describeRecordLog, createFileStorage
 };`, context, { filename: 'attendance-model.js', timeout: 1000 });
 const api = context.api;
 const {
   PERIOD_IDS, DAY_PREFIX, TARGET_PREFIX, PRESET_KEY, blankDay, periodStatus, daySummary,
   weekStart, addDays, weekDates, isDate, readPresets, writePresets, loadRecord, createDay, loadDay, updateDay, loadWeek,
-  listWeeks, readTarget, writeTarget,
+  listWeeks, readTarget, writeTarget, createRecordLog, parseRecordLog, describeRecordLog, createFileStorage,
 } = api;
 // Objects created in a vm have different prototypes; compare their JSON values.
 const plain = value => JSON.parse(JSON.stringify(value));
@@ -928,6 +928,425 @@ if (!process.argv.includes('--calendar-only')) {
       assert.throws(() => listWeeks(storage));
     }
   });
+  test('file snapshots expose Storage reads and refuse all writes by default', () => {
+    const key = dayKey('2025-01-01'), raw = encodeDay(fullDay());
+    const entries = [{ key, value: raw }];
+    const snapshot = createFileStorage(entries);
+    assert.equal(snapshot.length, 1);
+    assert.equal(snapshot.key(0), key);
+    assert.equal(snapshot.key(1), null);
+    assert.equal(snapshot.getItem(key), raw);
+    assert.equal(snapshot.getItem(PRESET_KEY), null);
+    assert.throws(() => snapshot.setItem(key, 'changed'), /read.only/i);
+    assert.throws(() => snapshot.setItem(PRESET_KEY, 'new'), /read.only/i);
+    assert.throws(() => snapshot.removeItem(key), /read.only/i);
+    assert.throws(() => snapshot.removeItem(PRESET_KEY), /read.only/i);
+    assert.equal(snapshot.length, 1);
+    assert.equal(snapshot.getItem(key), raw);
+    same(snapshot.patch(), { changes: [], expected: [] });
+    same(entries, [{ key, value: raw }]);
+    same(createFileStorage().patch(), { changes: [], expected: [] });
+  });
+  test('writable file stages copy entries and keep independent snapshots unchanged', () => {
+    const key = dayKey('2025-01-01'), raw = encodeDay(fullDay());
+    const entries = Object.freeze([Object.freeze({ key, value: raw })]);
+    const snapshot = createFileStorage(entries);
+    const stage = createFileStorage(entries, true);
+    stage.setItem(key, 'changed');
+    stage.setItem(PRESET_KEY, 123);
+    assert.equal(stage.getItem(key), 'changed');
+    assert.equal(stage.getItem(PRESET_KEY), '123');
+    assert.equal(stage.length, 2);
+    assert.equal(stage.key(1), PRESET_KEY);
+    assert.equal(snapshot.getItem(key), raw);
+    assert.equal(snapshot.getItem(PRESET_KEY), null);
+    same(entries, [{ key, value: raw }]);
+    same(stage.patch(), {
+      changes: [{ key, value: 'changed' }, { key: PRESET_KEY, value: '123' }],
+      expected: [{ key, value: raw }, { key: PRESET_KEY, value: null }],
+    });
+  });
+  test('file stage captures original values for read dependencies including missing keys', () => {
+    const key = dayKey('2025-01-01'), raw = encodeDay(empty());
+    const stage = createFileStorage([{ key, value: raw }], true);
+    same(stage.patch(), { changes: [], expected: [] });
+    assert.equal(stage.getItem(key), raw);
+    assert.equal(stage.getItem(PRESET_KEY), null);
+    assert.equal(stage.getItem(key), raw);
+    assert.equal(stage.getItem(PRESET_KEY), null);
+    same(stage.patch(), {
+      changes: [], expected: [{ key, value: raw }, { key: PRESET_KEY, value: null }],
+    });
+  });
+  test('repeated staged writes and removals retain the original compare-and-swap values', () => {
+    const key = dayKey('2025-01-01');
+    const stage = createFileStorage([{ key, value: 'original' }], true);
+    stage.setItem(key, 'first');
+    stage.setItem(key, 'second');
+    stage.removeItem(key);
+    assert.equal(stage.getItem(key), null);
+    stage.setItem(key, 'last');
+    stage.setItem(PRESET_KEY, 'new');
+    stage.setItem(PRESET_KEY, 'newer');
+    assert.equal(stage.getItem(PRESET_KEY), 'newer');
+    const expected = [{ key, value: 'original' }, { key: PRESET_KEY, value: null }];
+    same(stage.patch(), {
+      changes: [{ key, value: 'last' }, { key: PRESET_KEY, value: 'newer' }], expected,
+    });
+    same(stage.patch(), {
+      changes: [{ key, value: 'last' }, { key: PRESET_KEY, value: 'newer' }], expected,
+    });
+  });
+  test('file stage emits no changes for identical writes or mutations restored to their base', () => {
+    const key = dayKey('2025-01-01');
+    const stage = createFileStorage([{ key, value: 'original' }], true);
+    stage.setItem(key, 'original');
+    same(stage.patch().changes, []);
+    stage.setItem(key, 'temporary');
+    stage.removeItem(key);
+    stage.setItem(key, 'original');
+    stage.setItem(PRESET_KEY, 'temporary');
+    stage.removeItem(PRESET_KEY);
+    stage.removeItem(targetKey('2024-12-30'));
+    same(stage.patch(), {
+      changes: [], expected: [{ key, value: 'original' }, { key: PRESET_KEY, value: null },
+        { key: targetKey('2024-12-30'), value: null }],
+    });
+  });
+  test('file stage represents deletion with null and preserves the literal string null', () => {
+    const key = dayKey('2025-01-01');
+    const entries = [{ key, value: 'null' }];
+    const stage = createFileStorage(entries, true);
+    assert.equal(stage.getItem(key), 'null');
+    assert.equal(stage.getItem(PRESET_KEY), null);
+    stage.removeItem(key);
+    stage.setItem(PRESET_KEY, null);
+    assert.equal(stage.getItem(key), null);
+    assert.equal(stage.getItem(PRESET_KEY), 'null');
+    same(stage.patch(), {
+      changes: [{ key, value: null }, { key: PRESET_KEY, value: 'null' }],
+      expected: [{ key, value: 'null' }, { key: PRESET_KEY, value: null }],
+    });
+    assert.equal(stage.length, 1);
+    assert.equal(stage.key(0), PRESET_KEY);
+    same(entries, [{ key, value: 'null' }]);
+  });
+  test('updateDay stages a v2 to v3 update without changing the input file entries', () => {
+    const date = '2025-01-01', key = dayKey(date), raw = encodeDay(fullDay());
+    const entries = [{ key, value: raw }];
+    const stage = createFileStorage(entries, true);
+    updateDay(stage, date, 'morning', 'start', '09:00');
+    updateDay(stage, date, 'morning', 'end', '12:15');
+    const periods = { ...fullDay(), morning: { start: '09:00', end: '12:15' } };
+    same(stage.patch(), {
+      changes: [{ key, value: JSON.stringify({ version: 3, periods, presets: empty() }) }],
+      expected: [{ key, value: raw }],
+    });
+    same(loadRecord(stage, date), { periods, presets: empty() });
+    same(entries, [{ key, value: raw }]);
+    same(loadDay(createFileStorage(entries), date), fullDay());
+  });
+  test('writePresets stages related defaults and selected day as a single multi-key patch', () => {
+    const date = '2025-01-01', key = dayKey(date);
+    const dayRaw = encodeDay(fullDay());
+    const presetRaw = JSON.stringify({ version: 1, periods: empty() });
+    const historyKey = dayKey('2024-12-31'), historyRaw = encodeDay(empty());
+    const entries = [{ key: PRESET_KEY, value: presetRaw }, { key, value: dayRaw },
+      { key: historyKey, value: historyRaw }];
+    const original = JSON.stringify(entries);
+    const stage = createFileStorage(entries, true);
+    const presets = { ...empty(), morning: { start: '09:00', end: '' } };
+    writePresets(stage, presets, date);
+    const periods = { ...fullDay(), morning: { start: '09:00', end: '12:00' } };
+    const patch = stage.patch();
+    same(patch.changes, [
+      { key: PRESET_KEY, value: JSON.stringify({ version: 1, periods: presets }) },
+      { key, value: JSON.stringify({ version: 3, periods, presets }) },
+    ]);
+    same(patch.expected.slice().sort((a, b) => a.key.localeCompare(b.key)),
+      [{ key: PRESET_KEY, value: presetRaw }, { key, value: dayRaw }].sort((a, b) => a.key.localeCompare(b.key)));
+    assert.equal(patch.changes.some(change => change.key === historyKey), false);
+    assert.equal(JSON.stringify(entries), original);
+    same(loadRecord(stage, date), { periods, presets });
+    assert.throws(() => updateDay(stage, date, 'morning', 'start', ''), /locked/);
+  });
+  test('new-day file staging includes legacy fallback reads as concurrency dependencies', () => {
+    const date = '2025-01-01', key = dayKey(date), legacyKey = 'dsh-attendance.periods.v1';
+    const presets = { ...empty(), morning: { start: '08:30', end: '' } };
+    const legacyRaw = JSON.stringify({ version: 1, periods: presets });
+    const entries = [{ key: legacyKey, value: legacyRaw }];
+    const stage = createFileStorage(entries, true);
+    updateDay(stage, date, 'morning', 'end', '12:00', presets);
+    const periods = { ...empty(), morning: { start: '08:30', end: '12:00' } };
+    same(stage.patch(), {
+      changes: [{ key, value: JSON.stringify({ version: 3, periods, presets }) }],
+      expected: [{ key, value: null }, { key: PRESET_KEY, value: null }, { key: legacyKey, value: legacyRaw }],
+    });
+    same(entries, [{ key: legacyKey, value: legacyRaw }]);
+    assert.equal(createFileStorage(entries).getItem(key), null);
+  });
+  // Record logs preserve serialized storage values; importing never repairs or migrates them.
+  const logTimestamp = '2026-11-05T07:00:00.000Z';
+  const legacyLogKey = 'dsh-attendance.periods.v1';
+  const logEnvelope = (entries = []) => ({
+    format: 'dsh-attendance-log', version: 1, timeZone: 'Asia/Shanghai',
+    exportedAt: logTimestamp, entries,
+  });
+  const entry = (key, value) => ({ key, value });
+  class ReadOnlyLogStorage extends FakeStorage {
+    setItem(...args) {
+      this.calls.push(['setItem', ...args]);
+      throw new Error('Record logs must not write storage');
+    }
+    removeItem(...args) {
+      this.calls.push(['removeItem', ...args]);
+      throw new Error('Record logs must not remove storage');
+    }
+    clear(...args) {
+      this.calls.push(['clear', ...args]);
+      throw new Error('Record logs must not clear storage');
+    }
+  }
+  const assertLogReadOnly = (storage, before) => {
+    same([...storage.entries], before, 'record log operations preserve every stored byte');
+    same(storage.calls.filter(([operation]) => ['setItem', 'removeItem', 'clear'].includes(operation)), []);
+  };
+  test('record log exports and parses v2, v3 snapshots, presets, targets and legacy defaults losslessly', () => {
+    const snapshot = { ...empty(), morning: { start: '08:30', end: '' } };
+    const fixed = { ...fullDay(), morning: { start: '08:30', end: '12:10' } };
+    const entries = [
+      [targetKey('2024-12-30'), ' 37.5 '],
+      [PRESET_KEY, JSON.stringify({ version: 1, periods: fullDay() }, null, 2)],
+      [dayKey('2025-01-02'), JSON.stringify({ version: 3, periods: fixed, presets: snapshot }, null, 2)],
+      [legacyLogKey, JSON.stringify({ version: 1, periods: empty() })],
+      [dayKey('2025-01-01'), ' ' + encodeDay(fullDay()) + '\n'],
+    ];
+    const storage = new ReadOnlyLogStorage(entries);
+    const before = [...storage.entries];
+    const expected = logEnvelope(entries.map(([key, value]) => entry(key, value))
+      .sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+    const log = createRecordLog(storage, logTimestamp);
+    same(log, expected);
+    const parsed = parseRecordLog(JSON.stringify(log));
+    same(parsed, expected);
+    const restored = new ReadOnlyLogStorage(parsed.entries.map(({ key, value }) => [key, value]));
+    same(createRecordLog(restored, logTimestamp), expected);
+    same(loadRecord(restored, '2025-01-01'), { periods: fullDay(), presets: empty() });
+    same(loadRecord(restored, '2025-01-02'), { periods: fixed, presets: snapshot });
+    same(readPresets(restored), fullDay());
+    assert.equal(readTarget(restored, '2024-12-30'), 37.5);
+    assertLogReadOnly(storage, before);
+    assertLogReadOnly(restored, before.slice().sort((a, b) => a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  });
+  test('record log export filters browser keys and invalid date suffixes before reading values', () => {
+    const allowed = [
+      [dayKey('2024-02-29'), encodeDay(empty())],
+      [targetKey('2025-01-07'), '40'],
+      [PRESET_KEY, '{broken preset'], [legacyLogKey, '{broken legacy'],
+    ];
+    const excluded = ['unrelated.setting', 'dsh-auth-token', 'dsh-attendance.unknown',
+      DAY_PREFIX, TARGET_PREFIX, PRESET_KEY + '.extra', legacyLogKey + '.extra',
+      dayKey('2025-02-29'), dayKey('2024-02-30'), dayKey('2025-1-01'),
+      dayKey('2025-01-01.extra'), dayKey('2025-01-01\n'),
+      targetKey('2025-02-29'), targetKey('2025-13-01'), targetKey('2025-01-01T00:00:00Z')];
+    const storage = new ReadOnlyLogStorage([...excluded.map(key => [key, 'private']), ...allowed]);
+    const before = [...storage.entries];
+    const log = createRecordLog(storage, logTimestamp);
+    same(log.entries, allowed.map(([key, value]) => entry(key, value))
+      .sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+    assert.equal(storage.calls.some(([operation, key]) => operation === 'getItem' && excluded.includes(key)), false);
+    assertLogReadOnly(storage, before);
+  });
+  test('record log export creates a valid default timestamp and an empty envelope without writes', () => {
+    const storage = new ReadOnlyLogStorage();
+    const before = Date.now();
+    const log = createRecordLog(storage);
+    const after = Date.now();
+    const timestamp = Date.parse(log.exportedAt);
+    assert.equal(typeof log.exportedAt, 'string');
+    assert.ok(Number.isFinite(timestamp) && timestamp >= before && timestamp <= after);
+    same(log, { ...logEnvelope(), exportedAt: log.exportedAt });
+    same(parseRecordLog(JSON.stringify(log)), plain(log));
+    assertLogReadOnly(storage, []);
+  });
+  test('record log export preserves bad JSON and malformed stored values without parsing or writing', () => {
+    const rawValues = ['{broken\n', 'null', '{}', '', 'not JSON', '\uFEFF{broken',
+      JSON.stringify({ version: 99, periods: fullDay() })];
+    const stored = rawValues.map((raw, index) => [dayKey(`2025-01-${String(index + 1).padStart(2, '0')}`), raw]);
+    stored.push([PRESET_KEY, '{bad preset'], [legacyLogKey, '{bad legacy'], [targetKey('2024-12-30'), 'NaN']);
+    const storage = new ReadOnlyLogStorage(stored);
+    const before = [...storage.entries];
+    const log = createRecordLog(storage, logTimestamp);
+    same(parseRecordLog(JSON.stringify(log)), plain(log));
+    for (const [key, raw] of stored) assert.equal(log.entries.find(item => item.key === key).value, raw);
+    assertLogReadOnly(storage, before);
+  });
+  test('record log export propagates storage enumeration and allowed-key read failures', () => {
+    for (const operation of ['length', 'key', 'getItem']) {
+      const storage = new ReadOnlyLogStorage([[dayKey('2025-01-01'), encodeDay(fullDay())]]);
+      const before = [...storage.entries];
+      storage.denied.add(operation);
+      assert.throws(() => createRecordLog(storage, logTimestamp), undefined, operation);
+      assertLogReadOnly(storage, before);
+    }
+  });
+  test('record log parser accepts a BOM and treats entry values as opaque strings', () => {
+    const log = logEnvelope([
+      entry(dayKey('2024-02-29'), '{broken'), entry(PRESET_KEY, ''),
+      entry(legacyLogKey, 'null'), entry(targetKey('2025-01-07'), 'not JSON'),
+    ]);
+    const serialized = JSON.stringify(log);
+    same(parseRecordLog('\uFEFF' + serialized), log);
+    same(parseRecordLog(' \n' + serialized + '\n '), log);
+    assert.equal(serialized, JSON.stringify(log), 'parsing leaves the supplied envelope unchanged');
+  });
+  test('record log parser rejects malformed wrappers, formats, versions and timezones', () => {
+    for (const value of [null, [], true, 1, 'log', {},
+      { ...logEnvelope(), format: 'unknown' }, { ...logEnvelope(), format: null },
+      { ...logEnvelope(), version: 0 }, { ...logEnvelope(), version: 2 },
+      { ...logEnvelope(), version: '1' },
+      { ...logEnvelope(), timeZone: 'UTC' }, { ...logEnvelope(), timeZone: 'Asia/Shanghai ' }]) {
+      assert.throws(() => parseRecordLog(JSON.stringify(value)), undefined, JSON.stringify(value));
+    }
+    for (const field of ['format', 'version', 'timeZone', 'exportedAt', 'entries']) {
+      const log = logEnvelope();
+      delete log[field];
+      assert.throws(() => parseRecordLog(JSON.stringify(log)), undefined, `missing ${field}`);
+    }
+    for (const text of ['', '{broken', 'undefined', '{}{}', null, undefined, 123, logEnvelope()]) {
+      assert.throws(() => parseRecordLog(text));
+    }
+  });
+  test('record log parser and exporter reject invalid ISO export dates', () => {
+    for (const exportedAt of ['', 'not-a-date', '2025-01-01', '2025-01-01T00:00:00',
+      '2025-01-01T00:00:00.000Z\n', '2025-02-29T00:00:00.000Z',
+      '2024-02-30T00:00:00.000Z', '2025-13-01T00:00:00.000Z',
+      '2025-01-01T25:00:00.000Z', null, 0, {}, []]) {
+      assert.throws(() => parseRecordLog(JSON.stringify({ ...logEnvelope(), exportedAt })),
+        undefined, JSON.stringify(exportedAt));
+      const storage = new ReadOnlyLogStorage();
+      assert.throws(() => createRecordLog(storage, exportedAt), undefined, JSON.stringify(exportedAt));
+      assertLogReadOnly(storage, []);
+    }
+    for (const exportedAt of ['2024-02-29T23:59:59.000Z', '2026-11-05T15:00:00+08:00']) {
+      const log = { ...logEnvelope(), exportedAt };
+      same(parseRecordLog(JSON.stringify(log)), log);
+      same(createRecordLog(new ReadOnlyLogStorage(), exportedAt), log);
+    }
+  });
+  test('record log parser rejects invalid entry arrays, missing fields and non-string values', () => {
+    for (const entries of [null, {}, 'entries', 1, [null], [[]], ['entry'], [1],
+      [{}], [{ key: PRESET_KEY }], [{ value: '{}' }],
+      ...[null, 1, {}, []].map(key => [entry(key, '{}')]),
+      ...[null, 1, true, {}, []].map(value => [entry(PRESET_KEY, value)])]) {
+      assert.throws(() => parseRecordLog(JSON.stringify(logEnvelope(entries))), undefined, JSON.stringify(entries));
+    }
+  });
+  test('record log parser rejects non-plugin keys and invalid calendar suffixes', () => {
+    for (const key of ['', 'unrelated.setting', 'dsh-attendance.unknown',
+      DAY_PREFIX, TARGET_PREFIX, PRESET_KEY + '.extra', legacyLogKey + '.extra',
+      dayKey('2025-02-29'), dayKey('1900-02-29'), dayKey('2024-04-31'),
+      dayKey('2025-1-01'), dayKey('2025-01-1'), dayKey('2025-01-01\n'),
+      dayKey('2025-01-01.extra'), targetKey('2025-02-29'), targetKey('2025-00-01'),
+      targetKey('2025-01-01 '), targetKey('2025-01-01T00:00:00Z')]) {
+      assert.throws(() => parseRecordLog(JSON.stringify(logEnvelope([entry(key, '{}')]))), undefined, key);
+    }
+    for (const key of [dayKey('2000-02-29'), targetKey('2024-02-29'), PRESET_KEY, legacyLogKey]) {
+      const log = logEnvelope([entry(key, '{broken')]);
+      same(parseRecordLog(JSON.stringify(log)), log);
+    }
+  });
+  test('record log parser rejects duplicate keys even when their values differ', () => {
+    for (const key of [dayKey('2025-01-01'), targetKey('2024-12-30'), PRESET_KEY, legacyLogKey]) {
+      for (const value of ['first', 'second']) {
+        const log = logEnvelope([entry(key, 'first'), entry(key, value)]);
+        assert.throws(() => parseRecordLog(JSON.stringify(log)), undefined, key);
+      }
+    }
+  });
+  test('record log parser enforces the 5 MiB character limit including envelope overhead', () => {
+    const limit = 5 * 1024 * 1024;
+    const base = JSON.stringify(logEnvelope([entry(PRESET_KEY, '')]));
+    const atLimit = JSON.stringify(logEnvelope([entry(PRESET_KEY, '\u6c49'.repeat(limit - base.length))]));
+    assert.equal(atLimit.length, limit);
+    assert.equal(parseRecordLog(atLimit).entries[0].value.length, limit - base.length);
+    assert.throws(() => parseRecordLog(atLimit + ' '));
+    assert.throws(() => parseRecordLog(' '.repeat(limit + 1)));
+  });
+  test('record log description sorts days newest first and retains v2, fixed snapshots and empty days', () => {
+    const fixed = { ...empty(), morning: { start: '08:30', end: '' } };
+    const v3Raw = JSON.stringify({ version: 3, periods: fullDay(), presets: fixed });
+    const v2Raw = encodeDay(fullDay());
+    const emptyRaw = encodeDay(empty());
+    const log = logEnvelope([
+      entry(dayKey('2025-01-01'), v2Raw),
+      entry(PRESET_KEY, '{broken defaults do not change history'),
+      entry(dayKey('2025-01-03'), emptyRaw),
+      entry(legacyLogKey, JSON.stringify({ version: 1, periods: fullDay() })),
+      entry(targetKey('2025-02-03'), '40'),
+      entry(dayKey('2025-01-02'), v3Raw),
+    ]);
+    const before = JSON.stringify(log);
+    same(describeRecordLog(parseRecordLog(before)), {
+      days: [
+        { date: '2025-01-03', record: { periods: empty(), presets: empty() },
+          totalMinutes: 0, incomplete: false, error: null, raw: emptyRaw },
+        { date: '2025-01-02', record: { periods: fullDay(), presets: fixed },
+          totalMinutes: 615, incomplete: false, error: null, raw: v3Raw },
+        { date: '2025-01-01', record: { periods: fullDay(), presets: empty() },
+          totalMinutes: 615, incomplete: false, error: null, raw: v2Raw },
+      ], totalMinutes: 1230,
+    });
+    assert.equal(JSON.stringify(log), before);
+    same(describeRecordLog(logEnvelope([entry(PRESET_KEY, '{bad'), entry(targetKey('2025-01-06'), '40')])),
+      { days: [], totalMinutes: 0 });
+    same(describeRecordLog(logEnvelope()), { days: [], totalMinutes: 0 });
+  });
+  test('record log description keeps bad day diagnostics and raw bytes while excluding their totals', () => {
+    const malformed = ['{broken\n', 'null', '{}', '',
+      JSON.stringify({ version: 99, periods: fullDay() }),
+      JSON.stringify({ version: 2, periods: { morning: {} } }),
+      JSON.stringify({ version: 3, periods: fullDay() }),
+      JSON.stringify({ version: 3, periods: empty(), presets: fullDay() }),
+      encodeDay({ ...empty(), morning: { start: '25:00', end: '26:00' } })];
+    const entries = malformed.map((raw, index) => entry(dayKey(`2025-01-${String(index + 1).padStart(2, '0')}`), raw));
+    entries.push(entry(dayKey('2025-01-10'), encodeDay(fullDay())));
+    const log = parseRecordLog(JSON.stringify(logEnvelope(entries)));
+    const before = JSON.stringify(log);
+    const result = describeRecordLog(log);
+    assert.equal(result.totalMinutes, 615);
+    same(result.days.map(day => day.date), entries.map(item => item.key.slice(DAY_PREFIX.length)).reverse());
+    assert.equal(result.days.length, malformed.length + 1);
+    for (const [index, raw] of malformed.entries()) {
+      const date = `2025-01-${String(index + 1).padStart(2, '0')}`;
+      const row = result.days.find(day => day.date === date);
+      assert.equal(row.error, 'invalidRecord');
+      assert.equal(row.record, null);
+      assert.equal(row.totalMinutes, 0);
+      assert.equal(typeof row.incomplete, 'boolean');
+      assert.equal(row.raw, raw);
+    }
+    assert.equal(JSON.stringify(log), before, 'description preserves all input entries');
+  });
+  test('record log description uses day validation for partial, reversed and overlapping periods', () => {
+    const days = [
+      { ...empty(), morning: { start: '09:00', end: '' }, afternoon: { start: '13:00', end: '14:15' } },
+      { ...empty(), morning: { start: '23:00', end: '01:00' }, afternoon: { start: '13:00', end: '14:15' } },
+      { morning: { start: '09:00', end: '12:00' }, afternoon: { start: '11:00', end: '14:00' },
+        evening: { start: '19:00', end: '20:30' } },
+    ];
+    const log = logEnvelope(days.map((day, index) => entry(dayKey(`2025-01-0${index + 1}`), encodeDay(day))));
+    const result = describeRecordLog(parseRecordLog(JSON.stringify(log)));
+    assert.equal(result.totalMinutes, 240);
+    same(result.days.map(row => row.totalMinutes), [90, 75, 75]);
+    for (const row of result.days) {
+      assert.equal(row.error, null);
+      assert.equal(row.incomplete, true);
+      const original = days[Number(row.date.slice(-2)) - 1];
+      same(row.record, { periods: original, presets: empty() });
+      assert.equal(row.raw, encodeDay(original));
+    }
+  });
   test('Shanghai today crosses midnight using its explicit display timezone', () => {
     for (const [instant, expected] of [
       ['2024-12-31T15:59:59Z', '2024-12-31'],
@@ -948,6 +1367,8 @@ if (!process.argv.includes('--calendar-only')) {
   test('package exports and both locale resources remain available', () => {
     const manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
     assert.equal(manifest.name, 'dsh-attendance');
+    assert.ok(manifest.files.includes('file-store.js'), 'packed plugin must include its Host file store');
+    assert.ok(fs.existsSync(path.join(root, 'file-store.js')));
     for (const target of Object.values(manifest.exports)) {
       if (!target.includes('*')) assert.ok(fs.existsSync(path.join(root, target)), target);
     }

@@ -1,6 +1,6 @@
 {
   "name": "dsh-attendance",
-  "version": "0.4.4",
+  "version": "0.5.0",
   "private": true,
   "description": "Attendance day tabs and period cards with six fixed time presets, click-to-add manual entries, automatic totals and history.",
   "license": "MIT",
@@ -10,8 +10,8 @@
   "engines": { "node": ">=22" },
   "keywords": ["dsh", "deepseek-harness", "attendance", "time-tracking"],
   "scripts": {
-    "check": "node --check client.js && node --check index.js && node --check verify-attendance.cjs",
-    "test": "node verify-attendance.cjs"
+    "check": "node --check client.js && node --check index.js && node --check file-store.js && node --check verify-attendance.cjs && node --check verify-file-store.cjs && node --check verify-host.cjs && node --check verify-integration.cjs",
+    "test": "node verify-attendance.cjs && node verify-file-store.cjs && node verify-host.cjs && node verify-integration.cjs"
   },
   "type": "module",
   "exports": {
@@ -20,7 +20,7 @@
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
   },
-  "files": ["index.js", "client.js", "cordis.patch.yml", "locale/*.json", "icon.svg", "README.md", "LICENSE", "CHANGELOG.md"],
+  "files": ["index.js", "file-store.js", "client.js", "cordis.patch.yml", "locale/*.json", "icon.svg", "README.md", "LICENSE", "CHANGELOG.md"],
   "dsh": {
     "bundle": { "patch": "./cordis.patch.yml" },
     "client": {

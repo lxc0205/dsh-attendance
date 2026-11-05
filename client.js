@@ -187,6 +187,72 @@ window.__ModuleLoader__.load({
       if (!isDate(monday) || typeof hours !== 'number' || !Number.isFinite(hours) || hours <= 0 || hours > 168) throw new Error('Invalid target');
       storage.setItem(TARGET_PREFIX + monday, JSON.stringify(hours));
     }
+    function createFileStorage(entries = [], writable = false) {
+      const base = new Map(entries.map(entry => [entry.key, entry.value]));
+      const values = new Map(base), reads = new Map();
+      const observe = key => { if (writable && !reads.has(key)) reads.set(key, base.has(key) ? base.get(key) : null); };
+      return {
+        get length() { return values.size; },
+        key: index => [...values.keys()][index] ?? null,
+        getItem(key) { observe(key); return values.has(key) ? values.get(key) : null; },
+        setItem(key, value) { if (!writable) throw new Error('Read-only file snapshot'); observe(key); values.set(key, String(value)); },
+        removeItem(key) { if (!writable) throw new Error('Read-only file snapshot'); observe(key); values.delete(key); },
+        patch() {
+          const keys = new Set([...base.keys(), ...values.keys()]);
+          const changes = [...keys].filter(key => (base.get(key) ?? null) !== (values.get(key) ?? null)).map(key => ({ key, value: values.get(key) ?? null }));
+          return { changes, expected: [...reads].map(([key, value]) => ({ key, value })) };
+        }
+      };
+    }
+    const LOG_FORMAT = 'dsh-attendance-log';
+    const LOG_MAX_LENGTH = 5 * 1024 * 1024;
+    function isRecordLogKey(key) {
+      return typeof key === 'string' && (key === PRESET_KEY || key === 'dsh-attendance.periods.v1' ||
+        (key.startsWith(DAY_PREFIX) && isDate(key.slice(DAY_PREFIX.length))) ||
+        (key.startsWith(TARGET_PREFIX) && isDate(key.slice(TARGET_PREFIX.length))));
+    }
+    function parseRecordLog(text) {
+      if (typeof text !== 'string' || text.length > LOG_MAX_LENGTH) throw new Error('Invalid log size');
+      const log = JSON.parse(text.replace(/^\uFEFF/, ''));
+      if (!log || log.format !== LOG_FORMAT || log.version !== 1 || log.timeZone !== 'Asia/Shanghai' ||
+          typeof log.exportedAt !== 'string' || !isDate(log.exportedAt.slice(0, 10)) ||
+          !/^\d{4}-\d{2}-\d{2}T.+(?:Z|[+-]\d{2}:\d{2})$/.test(log.exportedAt) ||
+          !Number.isFinite(Date.parse(log.exportedAt)) || !Array.isArray(log.entries)) throw new Error('Invalid record log');
+      const seen = new Set();
+      const entries = log.entries.map(entry => {
+        if (!entry || !isRecordLogKey(entry.key) || typeof entry.value !== 'string' || seen.has(entry.key)) throw new Error('Invalid log entry');
+        seen.add(entry.key);
+        return { key: entry.key, value: entry.value };
+      });
+      return { format: LOG_FORMAT, version: 1, timeZone: 'Asia/Shanghai', exportedAt: log.exportedAt, entries };
+    }
+    function createRecordLog(storage, exportedAt = new Date().toISOString()) {
+      const keys = new Set();
+      const count = storage.length;
+      for (let index = 0; index < count; index++) {
+        const key = storage.key(index);
+        if (isRecordLogKey(key)) keys.add(key);
+      }
+      const entries = [];
+      for (const key of [...keys].sort()) {
+        const value = storage.getItem(key);
+        if (value !== null) entries.push({ key, value });
+      }
+      return parseRecordLog(JSON.stringify({ format: LOG_FORMAT, version: 1, timeZone: 'Asia/Shanghai', exportedAt, entries }, null, 2));
+    }
+    function describeRecordLog(log) {
+      const values = new Map(log.entries.map(entry => [entry.key, entry.value]));
+      const reader = { getItem: key => values.has(key) ? values.get(key) : null };
+      const dates = [...values.keys()].filter(key => key.startsWith(DAY_PREFIX)).map(key => key.slice(DAY_PREFIX.length)).sort().reverse();
+      const days = dates.map(date => {
+        const raw = values.get(DAY_PREFIX + date);
+        try {
+          const record = loadRecord(reader, date), summary = daySummary(record.periods);
+          return { date, record, totalMinutes: summary.total, incomplete: summary.incomplete, error: null, raw };
+        } catch { return { date, record: null, totalMinutes: 0, incomplete: false, error: 'invalidRecord', raw }; }
+      });
+      return { days, totalMinutes: days.reduce((sum, day) => sum + day.totalMinutes, 0) };
+    }
     function todayInShanghai() {
       const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date());
       const get = type => parts.find(part => part.type === type).value;
@@ -198,12 +264,18 @@ window.__ModuleLoader__.load({
         title: '考勤', subtitle: '让每一天的投入，都清晰可见。',
         presets: '固定时间预设', presetIntro: '为六个时间点分别设置预设。留空的时间点开放手动填写。',
         presetPolicy: '保存后同步今天已有的记录：新预设会覆盖对应时间点，留空的时间点保留原值并开放填写。历史记录保持不变。',
-        savePresets: '保存并同步今天', presetsSaved: '预设已保存并同步今天，历史记录保持不变。', presetInvalid: '预设无效或保存失败，请检查时间顺序、重叠及浏览器存储。',
+        savePresets: '保存并同步今天', presetsSaved: '预设已保存并同步今天，历史记录保持不变。', presetInvalid: '预设无效或保存失败，请检查时间顺序、重叠及日志文件权限。',
         presetPartialError: '预设已保存，但今天的记录未更新，请重新保存预设完成同步。',
         dayChanged: '日期已变化，请重新保存预设以同步新的一天。',
         presetReadError: '预设读取失败，暂不能创建新记录；已有记录仍可查询与编辑。',
         presetsChanged: '预设或当天记录已在其他页面更新，已刷新显示，请核对后重新操作。',
         fixed: '预设固定', manual: '手动填写', addTime: '点击添加', editTime: '点击修改',
+        openFolder: '打开日志文件夹', folderOpened: '已请求打开日志文件夹。', folderOpenError: '无法打开文件夹，请检查本机桌面环境。',
+        fileLoading: '正在读取 JSON 记录…', fileLoadError: '日志文件读取失败，已暂停写入；可打开文件夹检查 JSON，再点重新读取。',
+        hostRestart: '请重启 DSH，启用本地 JSON 文件存储后再使用。',
+        migrationDone: '原浏览器记录已迁移到 JSON 文件，原数据仍保留。',
+        migrationConflicts: '旧记录已合并；冲突日期以文件为准，原浏览器数据保留。',
+        migrationUnavailable: '暂未读取到浏览器旧记录，原数据未改动；文件存储可以继续使用。',
         clearTime: '清空时间',
         saveTime: '保存时间', cancel: '取消',
         dayFocus: '当天概览', recorded: '已记录', notStarted: '尚未填写',
@@ -213,7 +285,7 @@ window.__ModuleLoader__.load({
         day0: '周一', day1: '周二', day2: '周三', day3: '周四', day4: '周五', day5: '周六', day6: '周日',
         currentProgress: '本周累计时长', target: '本周目标（小时）', saveTarget: '保存目标',
         targetHint: '默认 40 小时，可自行调整。目标按周保存。', targetError: '目标须大于 0 且不超过 168 小时。',
-        targetSaved: '本周目标已保存。', targetLoadError: '本周目标读取失败，请检查浏览器存储。', weekChanged: '已进入新的一周，请重新填写本周目标。',
+        targetSaved: '本周目标已保存。', targetLoadError: '本周目标读取失败，请检查JSON 文件。', weekChanged: '已进入新的一周，请重新填写本周目标。',
         previous: '上一周', next: '下一周', current: '返回本周', query: '按日期查询',
         history: '有记录的周', chooseHistory: '选择历史周', date: '日期', dailyTotal: '当天总时长',
         duration: '时长', weekTotal: '所选周合计', currentWeek: '本周', today: '今天',
@@ -223,7 +295,6 @@ window.__ModuleLoader__.load({
         saveError: '保存失败，本次输入尚未保存。请重试后再切换周次。', retry: '重试保存',
         loadError: '以下日期读取失败，已禁止编辑以保护原记录：',
         historyError: '历史记录目录读取失败。', currentError: '本周记录有读取失败的日期，累计可能不完整。',
-        storageHint: '记录自动保存在当前浏览器，可按周或日期查询。清理浏览器数据会删除记录，不同浏览器不会同步。',
         progressHint: '进度始终显示本周；历史查询不影响本周统计。',
         empty: '这一周还没有考勤记录，可直接填写。', retryLoad: '重新读取',
         pending: '有输入尚未保存，请先重试保存。'
@@ -232,12 +303,18 @@ window.__ModuleLoader__.load({
         title: 'Attendance', subtitle: 'Make every day’s effort visible.',
         presets: 'Fixed time presets', presetIntro: 'Set any of the six times. Only fields without a preset can be entered manually.',
         presetPolicy: 'Saving updates today’s existing record: fixed presets replace those times; empty presets retain the existing value and allow manual editing. Historical records stay unchanged.',
-        savePresets: 'Save and update today', presetsSaved: 'Presets saved and today updated. Historical records are unchanged.', presetInvalid: 'Could not save presets. Check time order, overlaps and browser storage.',
+        savePresets: 'Save and update today', presetsSaved: 'Presets saved and today updated. Historical records are unchanged.', presetInvalid: 'Could not save presets. Check time order, overlaps and the JSON files.',
         presetPartialError: 'Presets were saved but today’s record was not updated. Save presets again to finish syncing.',
         dayChanged: 'The date changed. Save presets again to update the new day.',
         presetReadError: 'Could not read presets. New records are unavailable; existing records remain accessible.',
         presetsChanged: 'Presets or this day changed in another page. The view has refreshed; review it and try again.',
         fixed: 'Fixed preset', manual: 'Manual entry', addTime: 'Click to add', editTime: 'Click to edit',
+        openFolder: 'Open log folder', folderOpened: 'Requested opening the log folder.', folderOpenError: 'Could not open the folder. Check the Host desktop environment.',
+        fileLoading: 'Reading JSON records…', fileLoadError: 'Could not read the log file. Writes are paused; check the JSON in its folder and reload.',
+        hostRestart: 'Restart DSH to enable local JSON file storage.',
+        migrationDone: 'Browser records migrated to the JSON file. The originals are retained.',
+        migrationConflicts: 'Old records merged. Existing file records take precedence; browser originals are retained.',
+        migrationUnavailable: 'Browser records could not be read. Originals are untouched; file storage remains available.',
         clearTime: 'Clear time',
         saveTime: 'Save time', cancel: 'Cancel',
         dayFocus: 'Daily overview', recorded: 'Recorded', notStarted: 'Not filled in',
@@ -247,7 +324,7 @@ window.__ModuleLoader__.load({
         day0: 'Mon', day1: 'Tue', day2: 'Wed', day3: 'Thu', day4: 'Fri', day5: 'Sat', day6: 'Sun',
         currentProgress: 'This week’s hours', target: 'Weekly target (hours)', saveTarget: 'Save target',
         targetHint: 'Defaults to 40 hours. Targets are saved per week.', targetError: 'Target must be greater than 0 and no more than 168 hours.',
-        targetSaved: 'Weekly target saved.', targetLoadError: 'Could not read the weekly target. Check browser storage.', weekChanged: 'A new week has started. Please enter the new weekly target.',
+        targetSaved: 'Weekly target saved.', targetLoadError: 'Could not read the weekly target. Check the JSON files.', weekChanged: 'A new week has started. Please enter the new weekly target.',
         previous: 'Previous week', next: 'Next week', current: 'Current week', query: 'Find by date',
         history: 'Recorded weeks', chooseHistory: 'Choose a week', date: 'Date', dailyTotal: 'Daily total',
         duration: 'Duration', weekTotal: 'Selected week total', currentWeek: 'This week', today: 'Today',
@@ -257,7 +334,6 @@ window.__ModuleLoader__.load({
         saveError: 'Could not save this input. Retry before switching weeks.', retry: 'Retry saving',
         loadError: 'Could not read these dates. Editing is disabled to protect existing records:',
         historyError: 'Could not read the history index.', currentError: 'Some current-week records could not be read. The total may be incomplete.',
-        storageHint: 'Records are saved in this browser and searchable by week or date. Clearing browser data removes them; browsers do not sync.',
         progressHint: 'Progress always shows the current week, even when viewing history.',
         empty: 'No attendance recorded this week. Start entering times.', retryLoad: 'Reload records',
         pending: 'An input has not been saved. Retry saving first.'
@@ -300,6 +376,7 @@ window.__ModuleLoader__.load({
       .at-editor{margin-top:10px;border:1px solid var(--at-blue);border-radius:10px;padding:10px;background:color-mix(in srgb,var(--at-blue) 4%,var(--at-surface))}.at-editor input{width:100%;margin:7px 0 10px}.at-editor .at-tools{gap:6px}.at-editor button{padding:7px 10px}
       .at-preset-panel{border:1px solid var(--at-border);border-radius:14px;padding:18px;background:var(--at-surface);box-shadow:var(--at-shadow)}.at-preset-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin:14px 0}.at-preset-group{border:1px solid var(--at-border);border-top:3px solid var(--at-period,var(--at-blue));border-radius:10px;padding:12px;min-width:0}.at-preset-group legend{font-size:13px;font-weight:650;padding:0 6px}.at-preset-group label{display:flex;flex-direction:column;gap:5px;font-size:12px;margin-bottom:10px;color:var(--at-muted)}.at-preset-group label:last-child{margin-bottom:0}.at-preset-group input{width:100%;min-width:0}
       .at-badge{border-radius:20px;padding:4px 9px;background:color-mix(in srgb,var(--at-ink) 8%,var(--at-surface));font-size:11px;font-weight:600;color:var(--at-muted)}.at-badge-recorded{background:var(--at-green);color:var(--at-white)}
+      .at-querybar{display:flex;align-items:center;flex-wrap:wrap;gap:7px;margin-top:10px;padding-top:8px;border-top:1px solid var(--at-border)}.at-querybar .at-label{gap:5px;flex-wrap:nowrap}.at-querybar input,.at-querybar select,.at-querybar button{font-size:12px;height:29px;padding:4px 8px;border-radius:6px}.at-querybar select{max-width:240px}.at-querybar .at-primary{margin-left:auto}
       .at-page .at-error{font-size:12px;font-weight:500;color:var(--dsw-alias-state-error-primary,#dc2626)}.at-message:empty{display:none}.at-page input[aria-invalid=true]{border-color:var(--dsw-alias-state-error-primary,#dc2626)}
       @container attendance (max-width:780px){.at-segments,.at-preset-grid{grid-template-columns:1fr}.at-summary-grid{grid-template-columns:1fr}.at-tabs{grid-template-columns:repeat(7,96px)}.at-number{font-size:30px;line-height:38px}.at-page .at-point{min-height:92px}}
       @media(max-width:700px){.at-segments,.at-preset-grid,.at-summary-grid{grid-template-columns:1fr}.at-tabs{grid-template-columns:repeat(7,96px)}.at-number{font-size:30px;line-height:38px}.at-page .at-point{min-height:92px}.at-hero,.at-day-summary{padding:14px 16px}}
@@ -329,17 +406,36 @@ window.__ModuleLoader__.load({
         const t = ctx.locale.bind(NS);
         const formatDuration = value => `${Math.floor(value / 60)} ${t('hours')} ${value % 60} ${t('minuteUnit')}`;
         const sumWeek = week => Object.values(week.days).reduce((sum, day) => sum + daySummary(day).total, 0);
+        async function requestFile(route, body, signal) {
+          const controller = new AbortController(), abort = () => controller.abort();
+          if (signal?.aborted) controller.abort(); else signal?.addEventListener('abort', abort, { once: true });
+          const timer = window.setTimeout(abort, 20000);
+          try {
+            const response = await fetch(`/dsh-attendance/${route}`, { method: body === undefined ? 'GET' : 'POST', credentials: 'same-origin', cache: 'no-store', signal: controller.signal,
+              headers: body === undefined ? undefined : { 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) { const error = new Error(data.error || `HTTP ${response.status}`); error.status = response.status; error.filePath = data.filePath; error.directoryPath = data.directoryPath; throw error; }
+            return data;
+          } finally { window.clearTimeout(timer); signal?.removeEventListener('abort', abort); }
+        }
         function AttendancePage() {
           React.useSyncExternalStore(React.useCallback(listener => ctx.locale.subscribe(listener), []), () => ctx.locale.getSnapshot().revision);
           const [today, setToday] = React.useState(todayInShanghai);
           const currentMonday = weekStart(today);
           const [active, setActive] = React.useState(today);
           const selected = weekStart(active);
-          const [revision, refresh] = React.useReducer(value => value + 1, 0);
           const [editor, setEditor] = React.useState(null);
           const [pending, setPending] = React.useState(null);
-          const [saving, setSaving] = React.useState(false);
+          const [operationSaving, setSaving] = React.useState(false);
           const [notice, setNotice] = React.useState(null);
+          const [fileSnapshot, setFileSnapshot] = React.useState(null);
+          const [fileLoading, setFileLoading] = React.useState(true);
+          const [fileReadable, setFileReadable] = React.useState(false);
+          const [fileLocation, setFileLocation] = React.useState('');
+          const [openingFolder, setOpeningFolder] = React.useState(false);
+          const fileState = React.useRef(null), fileReadSequence = React.useRef(0), initializingFile = React.useRef(0);
+          const saving = operationSaving || fileLoading || !fileReadable || !fileSnapshot;
+          const fileStorage = React.useMemo(() => createFileStorage(fileSnapshot?.entries ?? []), [fileSnapshot]);
           const [presetsOpen, setPresetsOpen] = React.useState(false);
           const [presetDraft, setPresetDraft] = React.useState(null);
           const [presetDirty, setPresetDirty] = React.useState(false);
@@ -362,9 +458,12 @@ window.__ModuleLoader__.load({
             return () => { window.clearInterval(timer); window.removeEventListener('focus', check); document.removeEventListener('visibilitychange', check); };
           }, []);
           React.useEffect(() => {
-            const onStorage = event => { if (event.key === null || event.key === PRESET_KEY || event.key === 'dsh-attendance.periods.v1' || event.key.startsWith(DAY_PREFIX) || event.key.startsWith(TARGET_PREFIX)) refresh(); };
-            window.addEventListener('storage', onStorage);
-            return () => window.removeEventListener('storage', onStorage);
+            const controller = new AbortController();
+            reloadFile(true, controller.signal);
+            const read = () => { if (!document.hidden) reloadFile(false, controller.signal); };
+            const timer = window.setInterval(read, 15000);
+            window.addEventListener('focus', read); document.addEventListener('visibilitychange', read);
+            return () => { controller.abort(); fileReadSequence.current += 1; window.clearInterval(timer); window.removeEventListener('focus', read); document.removeEventListener('visibilitychange', read); };
           }, []);
           React.useEffect(() => {
             if (!editor && !pending && !presetDirty && !targetDirty) return;
@@ -379,7 +478,7 @@ window.__ModuleLoader__.load({
           }, [currentMonday, targetDirty]);
           const snapshot = React.useMemo(() => {
             try {
-              const storage = window.localStorage;
+              const storage = fileStorage;
               const viewed = loadWeek(storage, selected), current = selected === currentMonday ? viewed : loadWeek(storage, currentMonday);
               let target = null, targetError = false, history = [], historyError = false, presets = blankDay(), presetsError = false;
               try { target = readTarget(storage, currentMonday); } catch { targetError = true; }
@@ -390,7 +489,7 @@ window.__ModuleLoader__.load({
               const failed = monday => ({ days: Object.fromEntries(weekDates(monday).map(date => [date, blankDay()])), records: Object.fromEntries(weekDates(monday).map(date => [date, null])), errors: weekDates(monday) });
               return { viewed: failed(selected), current: failed(currentMonday), target: null, targetError: true, history: [], historyError: true, presets: blankDay(), presetsError: true };
             }
-          }, [selected, currentMonday, revision]);
+          }, [selected, currentMonday, fileStorage]);
           const dates = weekDates(selected), record = snapshot.viewed.records[active];
           const blocked = snapshot.viewed.errors.includes(active);
           const displayed = blocked ? blankDay() : record?.periods ?? snapshot.presets;
@@ -405,7 +504,7 @@ window.__ModuleLoader__.load({
             setActive(date); setNotice(null);
           }
           function cancelEditor() {
-            if (saving) return;
+            if (operationSaving) return;
             if (editor) restorePoint.current = `${editor.period}-${editor.field}`;
             setEditor(null); setPending(null); setNotice(null);
           }
@@ -413,43 +512,48 @@ window.__ModuleLoader__.load({
             if (actionBusy.current) return;
             actionBusy.current = true; setSaving(true); setPending(action); setNotice('saving');
             try {
-              if (!window.navigator.locks) throw new Error('Web Locks unavailable');
               if (action.kind === 'presets') {
-                await window.navigator.locks.request('dsh-attendance.presets', async () => {
-                  const date = todayInShanghai();
-                  await window.navigator.locks.request(`dsh-attendance.date.${date}`, () => {
-                    if (todayInShanghai() !== date) throw new Error('Day changed');
-                    writePresets(window.localStorage, action.value, date, true);
-                  });
+                const date = todayInShanghai();
+                await commitFile(storage => {
+                  if (todayInShanghai() !== date) throw new Error('Day changed');
+                  writePresets(storage, action.value, date, true);
                 });
                 setToday(todayInShanghai());
                 setPresetDraft(null); setPresetDirty(false); setPresetsOpen(false); setNotice('presetsSaved');
               } else {
-                await window.navigator.locks.request(`dsh-attendance.date.${action.date}`, () => updateDay(window.localStorage, action.date, action.period, action.field, action.value, action.expectedPresets));
+                await commitFile(storage => updateDay(storage, action.date, action.period, action.field, action.value, action.expectedPresets));
                 restorePoint.current = `${action.period}-${action.field}`; setEditor(null);
                 setNotice('saved');
               }
-              setPending(null); refresh();
+              setPending(null);
             } catch (error) {
               if (['Presets changed', 'Record changed'].includes(error.message)) {
-                setPending(null); setNotice('presetsChanged'); refresh();
+                setPending(null); setNotice('presetsChanged');
               } else if (error.message === 'Day changed') {
-                setPending(null); setToday(todayInShanghai()); setNotice('dayChanged'); refresh();
+                setPending(null); setToday(todayInShanghai()); setNotice('dayChanged');
               } else if (error.message === 'Preset partial save') {
-                setNotice('presetPartialError'); refresh();
+                setNotice('presetPartialError');
               } else { setNotice(action.kind === 'presets' ? 'presetInvalid' : 'saveError'); }
             }
             finally { actionBusy.current = false; setSaving(false); }
           }
-          function saveTarget(event) {
+          async function saveTarget(event) {
             event.preventDefault();
+            if (actionBusy.current || saving) return;
             if (weekStart(todayInShanghai()) !== currentMonday || targetDraftWeek.current !== currentMonday) {
               setToday(todayInShanghai()); setTargetDirty(false); setTargetInput(''); setNotice('weekChanged'); return;
             }
             const value = Number(targetInput);
             if (!targetInput.trim() || !Number.isFinite(value) || value <= 0 || value > 168) { setNotice('targetError'); return; }
-            try { writeTarget(window.localStorage, currentMonday, value); setTargetDirty(false); setTargetInput(''); setNotice('targetSaved'); refresh(); }
-            catch { setNotice('saveError'); }
+            actionBusy.current = true; setSaving(true); setNotice('saving');
+            try {
+              await commitFile(storage => {
+                if (weekStart(todayInShanghai()) !== currentMonday) throw new Error('Day changed');
+                writeTarget(storage, currentMonday, value);
+              });
+              setTargetDirty(false); setTargetInput(''); setNotice('targetSaved');
+            } catch (error) { setNotice(error.message === 'Day changed' ? 'weekChanged' : 'saveError'); }
+            finally { actionBusy.current = false; setSaving(false); }
           }
           function tabKey(event, index) {
             const next = event.key === 'ArrowRight' ? (index + 1) % 7 : event.key === 'ArrowLeft' ? (index + 6) % 7 : event.key === 'Home' ? 0 : event.key === 'End' ? 6 : null;
@@ -460,8 +564,72 @@ window.__ModuleLoader__.load({
             setPresetDraft(previous => { const base = previous ?? snapshot.presets; return { ...base, [period]: { ...base[period], [field]: value } }; });
             setPresetDirty(true); if (pending?.kind === 'presets') setPending(null); setNotice(null);
           }
+          function acceptFile(data) {
+            if (!data || !Array.isArray(data.entries) || typeof data.filePath !== 'string' || typeof data.revision !== 'string') throw new Error('Invalid file response');
+            fileState.current = data; setFileLocation(data.directoryPath || data.filePath); setFileReadable(true);
+            setFileSnapshot(previous => previous?.revision === data.revision && previous?.filePath === data.filePath ? previous : data);
+          }
+          async function reloadFile(initialize = false, signal) {
+            if (actionBusy.current || (!initialize && (initializingFile.current || !fileState.current))) return;
+            const sequence = ++fileReadSequence.current;
+            if (initialize) { initializingFile.current = sequence; setFileLoading(true); }
+            try {
+              let data = await requestFile('state', undefined, signal);
+              if (sequence !== fileReadSequence.current || signal?.aborted) return;
+              setFileLocation(data.directoryPath || data.filePath);
+              if (initialize) {
+                let browser = null, entries = null;
+                try {
+                  browser = window.localStorage;
+                  let marker = null;
+                  try { marker = JSON.parse(browser.getItem('dsh-attendance.file-migration.v1')); } catch { /* Retry an unfinished migration. */ }
+                  if (marker?.filePath !== data.filePath || marker?.complete !== true) entries = createRecordLog(browser).entries;
+                } catch { setNotice('migrationUnavailable'); }
+                if (entries !== null) {
+                  if (entries.length) data = await requestFile('migrate', { entries }, signal);
+                  if (sequence !== fileReadSequence.current || signal?.aborted) return;
+                  try { browser.setItem('dsh-attendance.file-migration.v1', JSON.stringify({ filePath: data.filePath, complete: true })); } catch { /* File migration has succeeded; keep the browser originals. */ }
+                  if (data.conflicts) setNotice('migrationConflicts');
+                  else if (data.imported) setNotice('migrationDone');
+                }
+              }
+              if (sequence !== fileReadSequence.current || signal?.aborted) return;
+              acceptFile(data);
+              setNotice(previous => ['fileLoadError', 'hostRestart'].includes(previous) ? null : previous);
+            } catch (error) {
+              if (sequence !== fileReadSequence.current || signal?.aborted) return;
+              if (error.directoryPath || error.filePath) setFileLocation(error.directoryPath || error.filePath);
+              setFileReadable(false); setNotice(error.status === 404 ? 'hostRestart' : 'fileLoadError');
+            } finally {
+              if (initializingFile.current === sequence) initializingFile.current = 0;
+              if (sequence === fileReadSequence.current) setFileLoading(false);
+            }
+          }
+          async function commitFile(operation) {
+            if (!fileState.current || !fileReadable) throw new Error('Attendance file unavailable');
+            fileReadSequence.current += 1;
+            let base = fileState.current;
+            for (let attempt = 0; attempt < 4; attempt++) {
+              const stage = createFileStorage(base.entries, true);
+              operation(stage);
+              const data = await requestFile('commit', stage.patch());
+              acceptFile(data);
+              if (!data.conflict) return data;
+              base = data;
+            }
+            throw new Error('Concurrent file changes; please retry');
+          }
+          async function openFileFolder() {
+            if (openingFolder) return;
+            setOpeningFolder(true);
+            try {
+              const data = await requestFile('open-folder', {});
+              setFileLocation(data.directoryPath || data.filePath); setNotice('folderOpened');
+            } catch (error) { setNotice(error.status === 404 ? 'hostRestart' : 'folderOpenError'); }
+            finally { setOpeningFolder(false); }
+          }
           const draft = presetDraft ?? snapshot.presets;
-          const errorNotice = notice && !['saved', 'targetSaved', 'saving', 'presetsSaved'].includes(notice);
+          const errorNotice = notice && !['saved', 'targetSaved', 'saving', 'presetsSaved', 'folderOpened', 'migrationDone', 'migrationConflicts'].includes(notice);
           return h('section', { className: 'at-page', 'aria-label': t('title') }, h('style', null, css),
             h('div', { className: 'at-inner' },
               h('header', { className: 'at-row' }, h('div', null, h('h1', null, t('title')), h('p', null, t('subtitle'))),
@@ -512,26 +680,27 @@ window.__ModuleLoader__.load({
                             h('button', { type: 'button', className: 'at-point', ref: element => { pointRefs.current[`${period}-${field}`] = element; }, disabled: blocked || saving || Boolean(pending) || Boolean(editor) || (!record && snapshot.presetsError), 'aria-label': `${t(period)} ${t(field)} ${value || t('addTime')}`, 'aria-describedby': status.error ? errorId : undefined, onClick: () => { setEditor({ date: active, period, field, value }); setNotice(null); } }, ...content),
                             h('button', { type: 'button', className: 'at-trash at-clear', title: t('clearTime'), 'aria-label': `${t('clearTime')} ${t(period)} ${t(field)}`, disabled: !value || blocked || saving || Boolean(pending) || Boolean(editor), onClick: event => { event.stopPropagation(); perform({ kind: 'field', date: active, period, field, value: '' }); } }, h(TrashIcon)));
                       })),
-                      editor?.date === active && editor.period === period ? h('form', { className: 'at-editor', onSubmit: event => { event.preventDefault(); if (editor.value !== '' && !isTime(editor.value)) { setNotice('invalidEntry'); return; } perform({ kind: 'field', ...editor, expectedPresets: record ? undefined : snapshot.presets }); }, onKeyDown: event => { if (event.key === 'Escape' && !saving) { event.preventDefault(); cancelEditor(); } } },
+                      editor?.date === active && editor.period === period ? h('form', { className: 'at-editor', onSubmit: event => { event.preventDefault(); if (editor.value !== '' && !isTime(editor.value)) { setNotice('invalidEntry'); return; } perform({ kind: 'field', ...editor, expectedPresets: record ? undefined : snapshot.presets }); }, onKeyDown: event => { if (event.key === 'Escape' && !operationSaving) { event.preventDefault(); cancelEditor(); } } },
                         h('label', null, `${t(period)} · ${t(editor.field)}`, h('span', { className: 'at-input-row' },
                           h('input', { type: 'time', step: 60, autoFocus: true, disabled: saving, value: editor.value, onChange: event => { const value = event.target.value; setEditor(previous => ({ ...previous, value })); if (pending?.kind === 'field') setPending(null); setNotice(null); } }),
                           h('button', { type: 'button', className: 'at-trash', title: t('clearTime'), 'aria-label': `${t('clearTime')} ${t(period)} ${t(editor.field)}`, disabled: saving || !editor.value || fixed[period][editor.field] !== '', onClick: () => { setEditor(previous => ({ ...previous, value: '' })); if (pending?.kind === 'field') setPending(null); setNotice(null); } }, h(TrashIcon)))),
-                        h('div', { className: 'at-tools' }, h('button', { type: 'submit', className: 'at-primary', disabled: saving || fixed[period][editor.field] !== '' }, t('saveTime')), h('button', { type: 'button', disabled: saving, onClick: cancelEditor }, t('cancel')))) : null,
+                        h('div', { className: 'at-tools' }, h('button', { type: 'submit', className: 'at-primary', disabled: saving || fixed[period][editor.field] !== '' }, t('saveTime')), h('button', { type: 'button', disabled: operationSaving, onClick: cancelEditor }, t('cancel')))) : null,
                       h('div', { className: 'at-segment-total' }, h('span', { className: 'at-sub' }, t('duration')), h('strong', null, blocked || status.duration === null ? '—' : formatDuration(status.duration))),
                       status.error && !blocked ? h('p', { id: errorId, className: 'at-error' }, t(status.error)) : null);
                   })),
                   h('p', { className: 'at-foot' }, t('countedHint'))),
-                h('div', { className: 'at-tools', style: { marginTop: 22 } },
+                h('div', { className: 'at-querybar', role: 'group', 'aria-label': t('query') },
                   h('label', { className: 'at-label' }, t('query'), h('input', { type: 'date', min: '1900-01-01', max: '9998-12-31', value: active, disabled: navigationLocked, onChange: event => { if (isDate(event.target.value)) navigate(event.target.value); } })),
-                  h('label', { className: 'at-label' }, t('history'), h('select', { value: '', disabled: navigationLocked, onChange: event => { if (event.target.value) navigate(event.target.value); } }, h('option', { value: '' }, t('chooseHistory')), ...snapshot.history.map(monday => h('option', { value: monday, key: monday }, range(monday)))))),
+                  h('label', { className: 'at-label' }, t('history'), h('select', { value: '', disabled: navigationLocked, onChange: event => { if (event.target.value) navigate(event.target.value); } }, h('option', { value: '' }, t('chooseHistory')), ...snapshot.history.map(monday => h('option', { value: monday, key: monday }, range(monday))))),
+                  h('button', { type: 'button', disabled: operationSaving || fileLoading || Boolean(pending), onClick: () => reloadFile(true) }, t('retryLoad')),
+                  h('button', { type: 'button', className: 'at-primary', disabled: openingFolder, title: fileLocation || t('openFolder'), onClick: openFileFolder }, t('openFolder'))),
+                fileLoading ? h('p', { role: 'status', className: 'at-foot' }, t('fileLoading')) : null,
                 snapshot.viewed.errors.length ? h('p', { className: 'at-error', role: 'alert' }, t('loadError'), ' ', snapshot.viewed.errors.join(', ')) : null,
                 snapshot.historyError ? h('p', { className: 'at-error', role: 'alert' }, t('historyError')) : null),
               snapshot.presetsError ? h('p', { className: 'at-error', role: 'alert' }, t('presetReadError')) : null,
               h('div', { className: 'at-tools at-message' }, notice ? h('p', { className: errorNotice ? 'at-error' : undefined, role: errorNotice ? 'alert' : 'status' }, t(notice)) : null,
-                pending && !saving ? h('button', { type: 'button', onClick: () => perform(pending) }, t('retry')) : null,
-                pending && !saving ? h('button', { type: 'button', onClick: () => { setPending(null); setNotice(null); } }, t('cancel')) : null,
-                h('button', { type: 'button', disabled: saving || Boolean(pending), onClick: refresh }, t('retryLoad'))),
-              h('p', { className: 'at-foot' }, t('storageHint'))));
+                pending && !operationSaving ? h('button', { type: 'button', disabled: saving, onClick: () => perform(pending) }, t('retry')) : null,
+                pending && !operationSaving ? h('button', { type: 'button', onClick: () => { setPending(null); setNotice(null); } }, t('cancel')) : null)));
         }
         ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: PANEL_ID, locale: NS }, AttendancePage));
         ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({ name: 'sidebar.panellist', id: PANEL_ID, order: 20, label: () => t('title'), locale: NS }, ClockIcon));

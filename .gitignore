@@ -13,6 +13,7 @@ coverage/
 *.key
 credentials*.json
 attendance-export*.json
+dsh-attendance-log-*.json
 
 # Editor and OS files
 .vscode/
