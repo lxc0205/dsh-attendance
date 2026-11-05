@@ -313,7 +313,7 @@ window.__ModuleLoader__.load({
         invalidEntry: '请输入有效的小时和分钟。', segments: '三个时段，一天的节奏',
         morning: '早上', afternoon: '下午', evening: '晚上', start: '上班', end: '下班',
         day0: '周一', day1: '周二', day2: '周三', day3: '周四', day4: '周五', day5: '周六', day6: '周日',
-        currentProgress: '本周累计时长', target: '每周目标（小时）', saveTarget: '保存目标',
+        currentProgress: '本周累计时长', target: '每周目标（小时）', targetShort: '目标', saveTarget: '保存目标',
         targetHint: '默认 40 小时，所有周共用这一个目标。', targetError: '目标须大于 0 且不超过 168 小时。',
         targetSaved: '每周目标已保存。', targetLoadError: '每周目标读取失败，请检查 JSON 文件。',
         previous: '上一周', next: '下一周', current: '返回本周', query: '按日期查询',
@@ -352,7 +352,7 @@ window.__ModuleLoader__.load({
         invalidEntry: 'Enter a valid hour and minute.', segments: 'Three periods. One day.',
         morning: 'Morning', afternoon: 'Afternoon', evening: 'Evening', start: 'Clock in', end: 'Clock out',
         day0: 'Mon', day1: 'Tue', day2: 'Wed', day3: 'Thu', day4: 'Fri', day5: 'Sat', day6: 'Sun',
-        currentProgress: 'This week’s hours', target: 'Weekly target (hours)', saveTarget: 'Save target',
+        currentProgress: 'This week’s hours', target: 'Weekly target (hours)', targetShort: 'Target', saveTarget: 'Save target',
         targetHint: 'Defaults to 40 hours. One target is shared by every week.', targetError: 'Target must be greater than 0 and no more than 168 hours.',
         targetSaved: 'Weekly target saved.', targetLoadError: 'Could not read the weekly target. Check the JSON files.',
         previous: 'Previous week', next: 'Next week', current: 'Current week', query: 'Find by date',
@@ -379,10 +379,10 @@ window.__ModuleLoader__.load({
       .at-page button{cursor:pointer;font-weight:500}.at-page button:hover:not(:disabled){background:color-mix(in srgb,var(--at-blue) 9%,var(--at-surface));border-color:var(--at-blue)}
       .at-page button:disabled,.at-page input:disabled{opacity:.48;cursor:not-allowed}.at-page button:focus-visible,.at-page input:focus-visible,.at-page select:focus-visible{outline:3px solid var(--at-blue);outline-offset:3px}
       .at-page .at-primary{background:var(--at-blue);color:var(--at-white);border-color:var(--at-blue);font-weight:600}.at-page .at-primary:hover:not(:disabled){background:#1d4ed8;border-color:#1d4ed8}
-      .at-hero,.at-day-summary{border:1px solid var(--at-border);border-top:4px solid var(--at-blue);border-radius:14px;padding:13px 18px;background:var(--at-surface);box-shadow:var(--at-shadow);min-width:0}.at-hero{padding:11px 16px}
+      .at-hero,.at-day-summary{border:1px solid var(--at-border);border-top:4px solid var(--at-blue);border-radius:14px;padding:13px 18px;background:var(--at-surface);box-shadow:var(--at-shadow);min-width:0}.at-hero{display:flex;flex-direction:column;gap:5px;padding:11px 16px}.at-target-note{margin:0;font-size:12px;line-height:17px;color:var(--at-muted);font-variant-numeric:tabular-nums}
       .at-kicker{font-size:13px;color:var(--at-ink);font-weight:650}.at-number{font-size:32px;line-height:40px;font-weight:700;letter-spacing:-.8px;font-variant-numeric:tabular-nums;margin:4px 0 2px;overflow-wrap:anywhere}.at-number small{font-size:13px;font-weight:600;letter-spacing:0;color:var(--at-muted);margin-left:12px}
-      .at-track{height:10px;border-radius:8px;overflow:hidden;background:color-mix(in srgb,var(--at-ink) 12%,var(--at-surface));margin:8px 0}.at-fill{height:100%;background:linear-gradient(90deg,var(--at-blue),var(--at-green));border-radius:inherit;transition:width .25s ease}
-      .at-summary-grid{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(220px,1fr);gap:14px}.at-day-summary{border-top-color:var(--at-green);display:flex;flex-direction:column;justify-content:space-between;gap:6px}
+      .at-track{height:10px;border-radius:8px;overflow:hidden;background:color-mix(in srgb,var(--at-ink) 12%,var(--at-surface));margin:2px 0}.at-fill{height:100%;background:linear-gradient(90deg,var(--at-blue),var(--at-green));border-radius:inherit;transition:width .25s ease}
+      .at-summary-grid{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(220px,1fr);align-items:start;gap:14px}.at-day-summary{border-top-color:var(--at-green);display:flex;flex-direction:column;justify-content:space-between;gap:6px}
       .at-label{display:flex;align-items:center;flex-wrap:wrap;gap:7px;font-size:12px;color:var(--at-muted)}.at-target{width:82px}.at-page .at-sub,.at-page .at-foot{font-size:12px;color:var(--at-muted)}
       .at-week-head{margin:0 0 10px}.at-tabs{display:grid;grid-template-columns:repeat(7,minmax(90px,1fr));gap:8px;overflow-x:auto;padding:4px 3px 8px}
       .at-page .at-tab{text-align:left;border-radius:11px;padding:10px 11px;display:flex;flex-direction:column;gap:5px;min-width:90px;border:1px solid var(--at-border);background:var(--at-surface);box-shadow:var(--at-shadow)}
@@ -676,6 +676,7 @@ window.__ModuleLoader__.load({
                   h('div', { className: 'at-row' }, h('span', { className: 'at-kicker' }, t('currentProgress')), h('span', { className: 'at-sub' }, range(currentMonday))),
                   h('div', { className: 'at-number' }, formatDuration(currentTotal), snapshot.target !== null ? h('small', null, `${percent.toFixed(1)}%`) : null),
                   percent !== null ? h('div', { className: 'at-track', role: 'progressbar', 'aria-label': t('currentProgress'), 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': Math.min(100, percent), 'aria-valuetext': `${formatDuration(currentTotal)} / ${snapshot.target} ${t('hours')}` }, h('div', { className: 'at-fill', style: { width: `${Math.min(100, percent)}%` } })) : null,
+                  snapshot.target !== null ? h('p', { className: 'at-target-note' }, `${t('targetShort')} ${snapshot.target} ${t('hours')}`) : null,
                   snapshot.current.errors.length ? h('p', { className: 'at-error', role: 'alert' }, t('currentError')) : null),
                 h('section', { className: 'at-day-summary', 'aria-label': t('dayFocus') }, h('div', { className: 'at-row' }, h('span', { className: 'at-kicker' }, t('dayFocus')), h('span', { className: record ? 'at-badge at-badge-recorded' : 'at-badge' }, record ? t('recorded') : t('notStarted'))),
                   h('div', null, h('p', null, active), h('div', { className: 'at-number' }, blocked || !record ? '—' : formatDuration(summary.total)), h('p', null, t('dailyTotal'))))),
