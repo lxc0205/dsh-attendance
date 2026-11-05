@@ -6,6 +6,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 
 export const DAY_PREFIX = 'dsh-attendance.v2.day.';
 export const TARGET_PREFIX = 'dsh-attendance.v2.target.';
+export const TARGET_KEY = 'dsh-attendance.v2.target';
 export const PRESET_KEY = 'dsh-attendance.presets.v1';
 export const LEGACY_PRESET_KEY = 'dsh-attendance.periods.v1';
 const queues = globalThis[Symbol.for('dsh.attendance.file-store.queues')] ??= new Map();
@@ -22,6 +23,7 @@ function classify(key) {
   if (typeof key !== 'string') throw new TypeError('Attendance key must be a string');
   if (key === PRESET_KEY) return ['presets'];
   if (key === LEGACY_PRESET_KEY) return ['legacyPresets'];
+  if (key === TARGET_KEY) return ['weeklyTarget'];
   for (const [prefix, directory] of [[DAY_PREFIX, 'records'], [TARGET_PREFIX, 'weekly-targets']]) {
     if (key.startsWith(prefix) && validDate(key.slice(prefix.length))) return [directory, key.slice(prefix.length)];
   }
@@ -45,30 +47,32 @@ function parseDocument(bytes, name) {
 function decodeSingletons(document, entries, onlySingletons) {
   if (document.presets !== null) entries.set(PRESET_KEY, JSON.stringify(document.presets));
   if (document.legacyPresets !== null) entries.set(LEGACY_PRESET_KEY, JSON.stringify(document.legacyPresets));
+  if (own(document, 'weeklyTarget') && document.weeklyTarget !== null) entries.set(TARGET_KEY, JSON.stringify(document.weeklyTarget));
   for (const [key, raw] of Object.entries(document.unparsedEntries)) {
     try { classify(key); } catch (cause) { throw new Error('Invalid attendance schema key', { cause }); }
-    if ((onlySingletons && key !== PRESET_KEY && key !== LEGACY_PRESET_KEY) || typeof raw !== 'string' || entries.has(key)) throw new Error('Invalid or duplicate unparsed attendance entry');
+    if ((onlySingletons && key !== PRESET_KEY && key !== LEGACY_PRESET_KEY && key !== TARGET_KEY) || typeof raw !== 'string' || entries.has(key)) throw new Error('Invalid or duplicate unparsed attendance entry');
     // Preserve raw original strings, even if a manually edited one has become valid JSON.
     entries.set(key, normalize(raw));
   }
 }
 function decodeSettings(bytes) {
   const document = parseDocument(bytes, 'settings');
-  const fields = ['format', 'version', 'presets', 'legacyPresets', 'unparsedEntries'];
-  if (!object(document) || fields.some(key => !own(document, key)) || Object.keys(document).some(key => !fields.includes(key)) || document.format !== 'dsh-attendance-settings' || document.version !== 1 || !object(document.unparsedEntries)) throw new Error('Invalid settings schema or unsupported format/version');
+  const required = ['format', 'version', 'presets', 'legacyPresets', 'unparsedEntries'];
+  const allowed = [...required, 'weeklyTarget'];
+  if (!object(document) || required.some(key => !own(document, key)) || Object.keys(document).some(key => !allowed.includes(key)) || document.format !== 'dsh-attendance-settings' || document.version !== 1 || !object(document.unparsedEntries)) throw new Error('Invalid settings schema or unsupported format/version');
   const entries = new Map();
   decodeSingletons(document, entries, true);
   return entries;
 }
 function encodeSettings(entries) {
-  const document = { format: 'dsh-attendance-settings', version: 1, presets: null, legacyPresets: null, unparsedEntries: {} };
-  for (const key of [PRESET_KEY, LEGACY_PRESET_KEY]) {
+  const document = { format: 'dsh-attendance-settings', version: 1, presets: null, legacyPresets: null, weeklyTarget: null, unparsedEntries: {} };
+  for (const [key, property] of [[PRESET_KEY, 'presets'], [LEGACY_PRESET_KEY, 'legacyPresets'], [TARGET_KEY, 'weeklyTarget']]) {
     if (!entries.has(key)) continue;
     const raw = entries.get(key);
     let value;
     try { value = JSON.parse(raw); } catch { document.unparsedEntries[key] = raw; continue; }
     if (value === null) document.unparsedEntries[key] = 'null';
-    else document[key === PRESET_KEY ? 'presets' : 'legacyPresets'] = value;
+    else document[property] = value;
   }
   return pretty(document);
 }
@@ -342,7 +346,7 @@ export class AttendanceFileStore {
 
   async _changes(current, next, { initialize = true } = {}) {
     const changes = new Map();
-    const settingsChanged = [PRESET_KEY, LEGACY_PRESET_KEY].some(key => current.entries.get(key) !== next.get(key));
+    const settingsChanged = [PRESET_KEY, LEGACY_PRESET_KEY, TARGET_KEY].some(key => current.entries.get(key) !== next.get(key));
     if (settingsChanged || (initialize && !current.files.has('settings.json'))) changes.set('settings.json', encodeSettings(next));
     const keys = new Set([...current.entries.keys(), ...next.keys()]);
     for (const key of keys) {

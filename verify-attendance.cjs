@@ -16,15 +16,15 @@ const helpers = source.slice(begin + beginMarker.length, end);
 // No window, document, React or real localStorage is provided to this model.
 const context = vm.createContext({});
 vm.runInContext(`${helpers}\nthis.api = {
-  PERIOD_IDS, DAY_PREFIX, TARGET_PREFIX, PRESET_KEY, blankDay, periodStatus, daySummary,
+  PERIOD_IDS, DAY_PREFIX, TARGET_PREFIX, TARGET_KEY, PRESET_KEY, blankDay, periodStatus, daySummary,
   weekStart, addDays, weekDates, isDate, readPresets, writePresets, loadRecord, createDay, loadDay, updateDay, loadWeek,
-  listWeeks, readTarget, writeTarget, createRecordLog, parseRecordLog, describeRecordLog, createFileStorage
+  listWeeks, readTarget, writeTarget, planTargetMigration, createRecordLog, parseRecordLog, describeRecordLog, createFileStorage
 };`, context, { filename: 'attendance-model.js', timeout: 1000 });
 const api = context.api;
 const {
-  PERIOD_IDS, DAY_PREFIX, TARGET_PREFIX, PRESET_KEY, blankDay, periodStatus, daySummary,
+  PERIOD_IDS, DAY_PREFIX, TARGET_PREFIX, TARGET_KEY, PRESET_KEY, blankDay, periodStatus, daySummary,
   weekStart, addDays, weekDates, isDate, readPresets, writePresets, loadRecord, createDay, loadDay, updateDay, loadWeek,
-  listWeeks, readTarget, writeTarget, createRecordLog, parseRecordLog, describeRecordLog, createFileStorage,
+  listWeeks, readTarget, writeTarget, planTargetMigration, createRecordLog, parseRecordLog, describeRecordLog, createFileStorage,
 } = api;
 // Objects created in a vm have different prototypes; compare their JSON values.
 const plain = value => JSON.parse(JSON.stringify(value));
@@ -852,26 +852,51 @@ if (!process.argv.includes('--calendar-only')) {
     storage.denied.delete('getItem');
     storage.denied.add('setItem');
     assert.throws(() => updateDay(storage, '2025-01-01', 'morning', 'start', '09:00'));
-    assert.throws(() => writeTarget(storage, '2024-12-30', 35));
+    assert.throws(() => writeTarget(storage, 35));
     assert.equal(storage.getItem(dayKey('2025-01-01')), original);
-    assert.equal(storage.getItem(targetKey('2024-12-30')), null);
+    assert.equal(storage.getItem(TARGET_KEY), null);
   });
-  test('weekly targets default to 40, persist fractional hours and stay independent', () => {
+  test('weekly targets default to 40, persist fractional hours and are shared by all weeks', () => {
     const storage = new FakeStorage();
-    assert.equal(readTarget(storage, '2024-12-30'), 40);
+    assert.equal(readTarget(storage), 40);
     assert.equal(storage.length, 0);
     for (const hours of [0.25, 37.5, 40, 168]) {
-      writeTarget(storage, '2024-12-30', hours);
-      assert.equal(readTarget(storage, '2024-12-30'), hours);
+      writeTarget(storage, hours);
+      assert.equal(readTarget(storage), hours);
     }
-    writeTarget(storage, '2025-01-06', 32);
-    assert.equal(readTarget(storage, '2024-12-30'), 168);
-    assert.equal(readTarget(storage, '2025-01-06'), 32);
-    const original = storage.getItem(targetKey('2024-12-30'));
+    assert.equal(storage.length, 1, 'one shared target key, not one per week');
+    assert.equal(storage.getItem(TARGET_KEY), '168');
+    const original = storage.getItem(TARGET_KEY);
     for (const hours of [0, -1, 168.01, NaN, Infinity, -Infinity, '', '40', null, undefined]) {
-      assert.throws(() => writeTarget(storage, '2024-12-30', hours));
-      assert.equal(storage.getItem(targetKey('2024-12-30')), original);
+      assert.throws(() => writeTarget(storage, hours));
+      assert.equal(storage.getItem(TARGET_KEY), original);
     }
+  });
+  test('a per-week target is adopted once and consolidated into the shared target', () => {
+    const storage = new FakeStorage();
+    storage.setItem(TARGET_PREFIX + '2024-12-30', '32');
+    storage.setItem(TARGET_PREFIX + '2025-01-06', '37.5');
+    assert.equal(readTarget(storage), 37.5, 'the newest saved week wins');
+    const entries = [...storage.entries].map(([key, value]) => ({ key, value }));
+    const plan = planTargetMigration(entries);
+    same(plan.changes, [
+      { key: TARGET_KEY, value: '37.5' },
+      { key: TARGET_PREFIX + '2025-01-06', value: null },
+      { key: TARGET_PREFIX + '2024-12-30', value: null },
+    ]);
+    same(plan.expected, [
+      { key: TARGET_PREFIX + '2025-01-06', value: '37.5' },
+      { key: TARGET_PREFIX + '2024-12-30', value: '32' },
+    ]);
+    const stage = createFileStorage(entries, true);
+    for (const change of plan.changes) { if (change.value === null) stage.removeItem(change.key); else stage.setItem(change.key, change.value); }
+    assert.equal(readTarget(createFileStorage(plan.changes.reduce((all, change) => {
+      const next = all.filter(entry => entry.key !== change.key);
+      if (change.value !== null) next.push({ key: change.key, value: change.value });
+      return next;
+    }, entries))), 37.5);
+    assert.equal(planTargetMigration([{ key: TARGET_KEY, value: '37.5' }]), null, 'a consolidated folder needs no migration');
+    assert.equal(planTargetMigration([{ key: TARGET_PREFIX + '2024-12-30', value: '{broken' }]), null);
   });
   test('history lists empty, nonempty and damaged records while ignoring invalid dates', () => {
     const storage = new FakeStorage();
@@ -892,7 +917,7 @@ if (!process.argv.includes('--calendar-only')) {
     storage.setItem(dayKey('2025-02-30'), encodeDay(fullDay()));
     storage.setItem(dayKey('2025-4-01'), encodeDay(fullDay()));
     storage.setItem('unrelated.setting', JSON.stringify(fullDay()));
-    writeTarget(storage, '2025-04-07', 20);
+    writeTarget(storage, 20);
     same(listWeeks(storage), [
       '2025-03-24', '2025-03-17', '2025-03-10', '2025-03-03',
       '2025-02-03', '2025-01-13', '2025-01-06', '2024-12-30', '2024-02-26',
@@ -910,15 +935,18 @@ if (!process.argv.includes('--calendar-only')) {
   });
   test('corrupt targets and denied target reads are reported without writes', () => {
     const storage = new FakeStorage();
-    for (const raw of ['{broken', 'null', '"40"', '0', '-1', '169', '1e999', '{}']) {
-      storage.setItem(targetKey('2024-12-30'), raw);
+    for (const raw of ['{broken', '"40"', '0', '-1', '169', '1e999', '{}']) {
+      storage.setItem(TARGET_KEY, raw);
       storage.calls.length = 0;
-      assert.throws(() => readTarget(storage, '2024-12-30'));
-      assert.equal(storage.getItem(targetKey('2024-12-30')), raw);
+      assert.throws(() => readTarget(storage));
+      assert.equal(storage.getItem(TARGET_KEY), raw);
       assert.equal(storage.calls.some(([operation]) => operation === 'setItem'), false);
     }
+    storage.setItem(TARGET_KEY, 'null');
+    assert.equal(readTarget(storage), 40, 'an emptied shared value falls back to the default');
+    storage.removeItem(TARGET_KEY);
     storage.denied.add('getItem');
-    assert.throws(() => readTarget(storage, '2024-12-30'));
+    assert.throws(() => readTarget(storage));
   });
   test('history enumeration refusal is visible to callers', () => {
     for (const operation of ['length', 'key']) {
@@ -1134,7 +1162,7 @@ if (!process.argv.includes('--calendar-only')) {
     same(loadRecord(restored, '2025-01-01'), { periods: fullDay(), presets: empty() });
     same(loadRecord(restored, '2025-01-02'), { periods: fixed, presets: snapshot });
     same(readPresets(restored), fullDay());
-    assert.equal(readTarget(restored, '2024-12-30'), 37.5);
+    assert.equal(readTarget(restored), 37.5);
     assertLogReadOnly(storage, before);
     assertLogReadOnly(restored, before.slice().sort((a, b) => a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
   });

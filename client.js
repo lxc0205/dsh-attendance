@@ -9,6 +9,7 @@ window.__ModuleLoader__.load({
     const PERIOD_IDS = ['morning', 'afternoon', 'evening'];
     const DAY_PREFIX = 'dsh-attendance.v2.day.';
     const TARGET_PREFIX = 'dsh-attendance.v2.target.';
+    const TARGET_KEY = 'dsh-attendance.v2.target';
     const PRESET_KEY = 'dsh-attendance.presets.v1';
     const blankDay = () => Object.fromEntries(PERIOD_IDS.map(id => [id, { start: '', end: '' }]));
     const isTime = value => typeof value === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
@@ -175,17 +176,46 @@ window.__ModuleLoader__.load({
       }
       return [...weeks].sort().reverse();
     }
-    function readTarget(storage, monday) {
-      if (!isDate(monday)) throw new Error('Invalid date');
-      const raw = storage.getItem(TARGET_PREFIX + monday);
-      if (raw === null) return 40;
+    function targetValue(raw) {
+      if (raw === null) return null;
       const hours = JSON.parse(raw);
+      if (hours === null) return null;
       if (typeof hours !== 'number' || !Number.isFinite(hours) || hours <= 0 || hours > 168) throw new Error('Invalid target');
       return hours;
     }
-    function writeTarget(storage, monday, hours) {
-      if (!isDate(monday) || typeof hours !== 'number' || !Number.isFinite(hours) || hours <= 0 || hours > 168) throw new Error('Invalid target');
-      storage.setItem(TARGET_PREFIX + monday, JSON.stringify(hours));
+    function legacyTargets(storage) {
+      const found = [];
+      for (let i = 0; i < storage.length; i++) {
+        const key = storage.key(i);
+        if (typeof key !== 'string' || !key.startsWith(TARGET_PREFIX)) continue;
+        const date = key.slice(TARGET_PREFIX.length);
+        if (!isDate(date)) continue;
+        try { const hours = targetValue(storage.getItem(key)); if (hours !== null) found.push({ key, date, hours }); }
+        catch { /* A damaged per-week value must not hide the shared target. */ }
+      }
+      return found.sort((left, right) => left.date < right.date ? 1 : -1);
+    }
+    function readTarget(storage) {
+      const shared = targetValue(storage.getItem(TARGET_KEY));
+      if (shared !== null) return shared;
+      const legacy = legacyTargets(storage);
+      return legacy.length ? legacy[0].hours : 40;
+    }
+    function writeTarget(storage, hours) {
+      if (typeof hours !== 'number' || !Number.isFinite(hours) || hours <= 0 || hours > 168) throw new Error('Invalid target');
+      for (const { key } of legacyTargets(storage)) storage.removeItem(key);
+      storage.setItem(TARGET_KEY, JSON.stringify(hours));
+    }
+    function planTargetMigration(entries) {
+      const storage = createFileStorage(entries);
+      try { if (targetValue(storage.getItem(TARGET_KEY)) !== null) return null; }
+      catch { return null; }
+      const legacy = legacyTargets(storage);
+      if (!legacy.length) return null;
+      return {
+        changes: [{ key: TARGET_KEY, value: JSON.stringify(legacy[0].hours) }, ...legacy.map(({ key }) => ({ key, value: null }))],
+        expected: legacy.map(({ key }) => ({ key, value: storage.getItem(key) }))
+      };
     }
     function createFileStorage(entries = [], writable = false) {
       const base = new Map(entries.map(entry => [entry.key, entry.value]));
@@ -283,9 +313,9 @@ window.__ModuleLoader__.load({
         invalidEntry: '请输入有效的小时和分钟。', segments: '三个时段，一天的节奏',
         morning: '早上', afternoon: '下午', evening: '晚上', start: '上班', end: '下班',
         day0: '周一', day1: '周二', day2: '周三', day3: '周四', day4: '周五', day5: '周六', day6: '周日',
-        currentProgress: '本周累计时长', target: '本周目标（小时）', saveTarget: '保存目标',
-        targetHint: '默认 40 小时，可自行调整。目标按周保存。', targetError: '目标须大于 0 且不超过 168 小时。',
-        targetSaved: '本周目标已保存。', targetLoadError: '本周目标读取失败，请检查JSON 文件。', weekChanged: '已进入新的一周，请重新填写本周目标。',
+        currentProgress: '本周累计时长', target: '每周目标（小时）', saveTarget: '保存目标',
+        targetHint: '默认 40 小时，所有周共用这一个目标。', targetError: '目标须大于 0 且不超过 168 小时。',
+        targetSaved: '每周目标已保存。', targetLoadError: '每周目标读取失败，请检查 JSON 文件。',
         previous: '上一周', next: '下一周', current: '返回本周', query: '按日期查询',
         history: '有记录的周', chooseHistory: '选择历史周', date: '日期', dailyTotal: '当天总时长',
         duration: '时长', weekTotal: '所选周合计', currentWeek: '本周', today: '今天',
@@ -323,8 +353,8 @@ window.__ModuleLoader__.load({
         morning: 'Morning', afternoon: 'Afternoon', evening: 'Evening', start: 'Clock in', end: 'Clock out',
         day0: 'Mon', day1: 'Tue', day2: 'Wed', day3: 'Thu', day4: 'Fri', day5: 'Sat', day6: 'Sun',
         currentProgress: 'This week’s hours', target: 'Weekly target (hours)', saveTarget: 'Save target',
-        targetHint: 'Defaults to 40 hours. Targets are saved per week.', targetError: 'Target must be greater than 0 and no more than 168 hours.',
-        targetSaved: 'Weekly target saved.', targetLoadError: 'Could not read the weekly target. Check the JSON files.', weekChanged: 'A new week has started. Please enter the new weekly target.',
+        targetHint: 'Defaults to 40 hours. One target is shared by every week.', targetError: 'Target must be greater than 0 and no more than 168 hours.',
+        targetSaved: 'Weekly target saved.', targetLoadError: 'Could not read the weekly target. Check the JSON files.',
         previous: 'Previous week', next: 'Next week', current: 'Current week', query: 'Find by date',
         history: 'Recorded weeks', chooseHistory: 'Choose a week', date: 'Date', dailyTotal: 'Daily total',
         duration: 'Duration', weekTotal: 'Selected week total', currentWeek: 'This week', today: 'Today',
@@ -441,7 +471,6 @@ window.__ModuleLoader__.load({
           const [presetDirty, setPresetDirty] = React.useState(false);
           const [targetInput, setTargetInput] = React.useState('');
           const [targetDirty, setTargetDirty] = React.useState(false);
-          const targetDraftWeek = React.useRef(currentMonday);
           const tabRefs = React.useRef({});
           const pointRefs = React.useRef({});
           const restorePoint = React.useRef(null);
@@ -471,17 +500,12 @@ window.__ModuleLoader__.load({
             window.addEventListener('beforeunload', guard);
             return () => window.removeEventListener('beforeunload', guard);
           }, [editor, pending, presetDirty, targetDirty]);
-          React.useEffect(() => {
-            if (targetDraftWeek.current === currentMonday) return;
-            targetDraftWeek.current = currentMonday; setTargetDirty(false); setTargetInput('');
-            if (targetDirty) setNotice('weekChanged');
-          }, [currentMonday, targetDirty]);
           const snapshot = React.useMemo(() => {
             try {
               const storage = fileStorage;
               const viewed = loadWeek(storage, selected), current = selected === currentMonday ? viewed : loadWeek(storage, currentMonday);
               let target = null, targetError = false, history = [], historyError = false, presets = blankDay(), presetsError = false;
-              try { target = readTarget(storage, currentMonday); } catch { targetError = true; }
+              try { target = readTarget(storage); } catch { targetError = true; }
               try { history = listWeeks(storage); } catch { historyError = true; }
               try { presets = readPresets(storage); } catch { presetsError = true; }
               return { viewed, current, target, targetError, history, historyError, presets, presetsError };
@@ -540,19 +564,13 @@ window.__ModuleLoader__.load({
           async function saveTarget(event) {
             event.preventDefault();
             if (actionBusy.current || saving) return;
-            if (weekStart(todayInShanghai()) !== currentMonday || targetDraftWeek.current !== currentMonday) {
-              setToday(todayInShanghai()); setTargetDirty(false); setTargetInput(''); setNotice('weekChanged'); return;
-            }
             const value = Number(targetInput);
             if (!targetInput.trim() || !Number.isFinite(value) || value <= 0 || value > 168) { setNotice('targetError'); return; }
             actionBusy.current = true; setSaving(true); setNotice('saving');
             try {
-              await commitFile(storage => {
-                if (weekStart(todayInShanghai()) !== currentMonday) throw new Error('Day changed');
-                writeTarget(storage, currentMonday, value);
-              });
+              await commitFile(storage => writeTarget(storage, value));
               setTargetDirty(false); setTargetInput(''); setNotice('targetSaved');
-            } catch (error) { setNotice(error.message === 'Day changed' ? 'weekChanged' : 'saveError'); }
+            } catch (error) { setNotice(/Unsupported attendance key/.test(error.message) ? 'hostRestart' : 'saveError'); }
             finally { actionBusy.current = false; setSaving(false); }
           }
           function tabKey(event, index) {
@@ -594,6 +612,12 @@ window.__ModuleLoader__.load({
                 }
               }
               if (sequence !== fileReadSequence.current || signal?.aborted) return;
+              const targetPlan = planTargetMigration(data.entries);
+              if (targetPlan) {
+                try { data = await requestFile('commit', targetPlan); }
+                catch { /* An older Host may reject the shared key; keep reading the legacy value. */ }
+                if (sequence !== fileReadSequence.current || signal?.aborted) return;
+              }
               acceptFile(data);
               setNotice(previous => ['fileLoadError', 'hostRestart'].includes(previous) ? null : previous);
             } catch (error) {

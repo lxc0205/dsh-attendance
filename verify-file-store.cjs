@@ -6,7 +6,7 @@ const { randomUUID } = require('node:crypto');
 const { pathToFileURL } = require('node:url');
 
 (async () => {
-  const { AttendanceFileStore, DAY_PREFIX, TARGET_PREFIX, PRESET_KEY, LEGACY_PRESET_KEY } = await import(pathToFileURL(path.join(__dirname, 'file-store.js')).href);
+  const { AttendanceFileStore, DAY_PREFIX, TARGET_PREFIX, TARGET_KEY, PRESET_KEY, LEGACY_PRESET_KEY } = await import(pathToFileURL(path.join(__dirname, 'file-store.js')).href);
   const tempParent = path.join(__dirname, '.tmp');
   await fs.mkdir(tempParent, { recursive: true });
   const root = await fs.mkdtemp(path.join(tempParent, 'file-store-tests-'));
@@ -40,7 +40,7 @@ const { pathToFileURL } = require('node:url');
       assert.equal(snapshot.storageLayout, 'daily-json');
       assert.deepEqual(snapshot.entries, []);
       assert.match(snapshot.revision, /^[a-f0-9]{64}$/);
-      assert.deepEqual(JSON.parse(await read(settingsPath)), { format: 'dsh-attendance-settings', version: 1, presets: null, legacyPresets: null, unparsedEntries: {} });
+      assert.deepEqual(JSON.parse(await read(settingsPath)), { format: 'dsh-attendance-settings', version: 1, presets: null, legacyPresets: null, weeklyTarget: null, unparsedEntries: {} });
       assert.match(await read(settingsPath), /\n  "format"/);
       assert.ok((await fs.stat(path.join(root, 'records'))).isDirectory());
       assert.ok((await fs.stat(path.join(root, 'weekly-targets'))).isDirectory());
@@ -57,6 +57,15 @@ const { pathToFileURL } = require('node:url');
       assert.deepEqual(JSON.parse(await read(settingsPath)).presets, { slots: [1, 2] });
       assert.equal(JSON.parse(await read(path.join(root, 'weekly-targets', '2026-11-02.json'))), 40);
       assert.deepEqual(await journals(root), []);
+    });
+    await test('a shared weekly target lives in settings instead of one file per week', async () => {
+      const snapshot = await store.commit({ changes: [{ key: TARGET_KEY, value: '37.5' }], expected: [{ key: TARGET_KEY, value: null }] });
+      assert.equal(snapshot.conflict, false);
+      assert.equal(values(snapshot)[TARGET_KEY], '37.5');
+      assert.equal(JSON.parse(await read(settingsPath)).weeklyTarget, 37.5);
+      await missing(path.join(root, 'weekly-targets', '2026-11-09.json'));
+      const reloaded = await store.read();
+      assert.equal(values(reloaded)[TARGET_KEY], '37.5');
     });
     await test('expected conflict returns latest canonical snapshot with no writes', async () => {
       const before = await read(dailyPath);

@@ -69,12 +69,12 @@ const vm = require('node:vm');
     console.log('PASS: preset and today save together while history and fixed-time locks survive JSON round trips');
 
     const stagedTarget = model.createFileStorage(presetSave.data.entries, true);
-    model.writeTarget(stagedTarget, '2026-11-02', 37.5);
+    model.writeTarget(stagedTarget, 37.5);
     const targetSave = await request('commit', stagedTarget.patch());
     assert.equal(targetSave.status, 200); assert.equal(targetSave.data.conflict, false);
-    assert.equal(JSON.parse(await fs.readFile(path.join(folder, 'weekly-targets', '2026-11-02.json'), 'utf8')), 37.5);
-    assert.equal(model.readTarget(model.createFileStorage(targetSave.data.entries), '2026-11-02'), 37.5);
-    console.log('PASS: weekly target is a plain number in its own weekly JSON file');
+    assert.equal(JSON.parse(await fs.readFile(path.join(folder, 'settings.json'), 'utf8')).weeklyTarget, 37.5);
+    assert.equal(model.readTarget(model.createFileStorage(targetSave.data.entries)), 37.5);
+    console.log('PASS: one shared weekly target lives in settings.json instead of a per-week file');
 
     const tabA = model.createFileStorage(presetSave.data.entries, true);
     const tabB = model.createFileStorage(presetSave.data.entries, true);
