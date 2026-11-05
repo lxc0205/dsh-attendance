@@ -359,8 +359,6 @@ export class AttendanceFileStore {
       }
       changes.set(`${directory}/${date}.json`, bytes);
     }
-    // Backups participate in the same rollback journal and retain exact previous bytes.
-    for (const [relative] of [...changes]) if (current.files.has(relative)) changes.set(`${relative}.bak`, current.files.get(relative));
     return changes;
   }
 

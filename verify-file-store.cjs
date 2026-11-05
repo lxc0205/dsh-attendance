@@ -125,7 +125,7 @@ const { pathToFileURL } = require('node:url');
       await store.commit({ changes: [{ key: PRESET_KEY, value: null }, { key: DAY_PREFIX + '2026-11-09', value: null }], expected: [{ key: PRESET_KEY, value: 'null' }] });
       assert.equal(values(await store.read())[PRESET_KEY], undefined);
       await missing(path.join(root, 'records', '2026-11-09.json'));
-      assert.equal(await read(path.join(root, 'records', '2026-11-09.json.bak')), 'null\n');
+      await missing(path.join(root, 'records', '2026-11-09.json.bak'));
     });
     await test('manual daily edits and damaged daily JSON are freshly visible and preserved', async () => {
       const initial = await store.read();
@@ -159,18 +159,15 @@ const { pathToFileURL } = require('node:url');
       }
       await fs.writeFile(settingsPath, valid);
     });
-    await test('each changed file gets its own exact previous-byte backup', async () => {
-      const dayBefore = await read(dailyPath);
-      const settingsBefore = await read(settingsPath);
-      const targetPath = path.join(root, 'weekly-targets', '2026-11-02.json');
-      const targetBefore = await read(targetPath);
+    await test('changed files replace their content and leave no backup copies', async () => {
       await commit([{ key: day, value: '{"backup":true}' }, { key: PRESET_KEY, value: '{"backup":true}' }, { key: target, value: '41' }]);
-      assert.equal(await read(dailyPath + '.bak'), dayBefore);
-      assert.equal(await read(settingsPath + '.bak'), settingsBefore);
-      assert.equal(await read(targetPath + '.bak'), targetBefore);
+      await missing(dailyPath + '.bak');
+      await missing(settingsPath + '.bak');
+      await missing(path.join(root, 'weekly-targets', '2026-11-02.json.bak'));
+      assert.equal(JSON.parse(await read(path.join(root, 'weekly-targets', '2026-11-02.json'))), 41);
     });
-    await test('partial multi-file installation failure rolls all files and backups back', async () => {
-      const paths = [dailyPath, dailyPath + '.bak', settingsPath, settingsPath + '.bak'];
+    await test('partial multi-file installation failure rolls all files back', async () => {
+      const paths = [dailyPath, settingsPath];
       const before = await Promise.all(paths.map(read));
       const install = store._install;
       let installed = 0;
@@ -315,17 +312,16 @@ const { pathToFileURL } = require('node:url');
       const release = new Promise((resolve, reject) => setTimeout(() => { fs.unlink(lock).then(resolve, reject); }, 60));
       await Promise.all([waiting, release]);
     });
-    await test('invalid backup destination fails before installing any data', async () => {
+    await test('an unwritable record destination fails without installing any data', async () => {
       const before = await read(dailyPath);
-      const backup = dailyPath + '.bak';
-      const previousBackup = await read(backup);
-      await fs.unlink(backup);
-      await fs.mkdir(backup);
-      await assert.rejects(commit([{ key: day, value: '{"shouldFail":true}' }]));
+      const blocked = path.join(root, 'records', '2026-11-07.json');
+      await fs.rm(blocked, { recursive: true, force: true });
+      await fs.mkdir(blocked);
+      await assert.rejects(commit([{ key: DAY_PREFIX + '2026-11-07', value: '{"blocked":true}' }, { key: day, value: '{"shouldFail":true}' }]));
       assert.equal(await read(dailyPath), before);
       assert.deepEqual(await journals(root), []);
-      await fs.rmdir(backup);
-      await fs.writeFile(backup, previousBackup);
+      await fs.rmdir(blocked);
+      await missing(blocked);
     });
     await test('expected conflict on absent storage creates no JSON files', async () => {
       const isolated = await fresh('absent-conflict');
